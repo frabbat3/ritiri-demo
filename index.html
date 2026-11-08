@@ -1,0 +1,3358 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<!--
+  ============================================================================
+  RITIRI DEMO · Pianificazione giornaliera — demo pubblica, dati fittizi, PWA offline
+  ============================================================================
+  VERSIONE DEMO PUBBLICA: il seed contiene solo dati inventati. Il CSV reale
+  importato dal telefono resta nel browser del dispositivo e non viene
+  caricato sul repository. Dopo il primo caricamento il service worker
+  permette l'uso offline.
+  ============================================================================
+  COME SI USA
+  1) Copia questo file sul telefono e aprilo con Safari (iOS) o Chrome (Android)
+     direttamente da file:// — non serve alcun server né connessione.
+  2) All'avvio viene caricato il CSV di esempio (seed). Per usare i dati reali:
+     Impostazioni → Importa CSV → scegli il file esportato dal gestionale.
+  3) Vai in "Domani": l'app propone un candidato alla volta, puoi chiamarlo,
+     registrare l'esito e selezionare fino a 7 persone per la giornata.
+     Con 7 selezionati compare "Conferma giornata": le persone passano in "Oggi".
+  4) In "Oggi" registri gli esiti dei ritiri. In "Totale" filtri, cerchi e
+     controlli tutti i contatti e i contatori.
+  5) Su iOS il localStorage da file:// può essere bloccato: in quel caso compare
+     un banner. Usa sempre "Salva stato (.json)" per un backup e "Carica stato"
+     per ripristinare dati, esiti, cache e giornate.
+  6) "Esporta CSV" genera ritiri_export_YYYY-MM-DD.csv con le colonne originali
+     più quelle aggiunte dall'app (UTF-8 con BOM, separatore virgola, campi
+     quotati), pronto per il reimporto nel gestionale.
+
+  NOTE TECNICHE
+  - Nessuna risorsa esterna, nessun font remoto, nessun framework.
+  - Le uniche chiamate di rete (solo se online) sono verso Nominatim
+    (OpenStreetMap) per la geocodifica degli indirizzi e verso OSRM per le
+    distanze stradali. Offline l'app usa il fallback CAP/città.
+  - I dati restano sul dispositivo (localStorage o file .json esportato).
+  ============================================================================
+-->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5">
+<meta name="theme-color" content="#0d3a31">
+<meta name="robots" content="noindex,nofollow">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<meta name="apple-mobile-web-app-title" content="Ritiri Demo">
+<meta name="application-name" content="Ritiri Demo">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="format-detection" content="telephone=no">
+<title>Ritiri Demo · Pianificazione giornaliera</title>
+<style>
+/* ============================ BASE / RESET ============================ */
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+:root{
+  --bg:#f3f1ea;
+  --surface:#fffdf9;
+  --surface-2:#faf7ef;
+  --ink:#17211e;
+  --muted:#5b6862;
+  --line:#e0dbcf;
+  --line-strong:#cfc8b8;
+  --accent:#0f6b5a;
+  --accent-dark:#0a4e41;
+  --accent-soft:#e2f1eb;
+  --green:#1c7a4d;
+  --green-soft:#e5f4ea;
+  --yellow:#8f5b0d;
+  --yellow-soft:#fdf2d8;
+  --red:#a83227;
+  --red-soft:#fbe9e6;
+  --blue:#255a9e;
+  --blue-soft:#e7effb;
+  --nav-h:66px;
+  --radius:16px;
+  --shadow:0 1px 2px rgba(20,30,25,.05),0 7px 20px rgba(20,30,25,.06);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+html,body{min-height:100%}
+body{
+  margin:0;
+  font-family:var(--font);
+  font-size:16px;
+  line-height:1.45;
+  color:var(--ink);
+  background:
+    radial-gradient(1100px 500px at 100% -10%, #e8efe8 0%, transparent 60%),
+    var(--bg);
+  padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 18px);
+  -webkit-tap-highlight-color:transparent;
+  overscroll-behavior-y:contain;
+}
+body.storage-blocked{padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 84px)}
+body.modal-open{overflow:hidden}
+button,input,select,textarea{font:inherit;font-size:16px;color:inherit}
+button{cursor:pointer;touch-action:manipulation}
+a{color:var(--accent);text-decoration:none}
+h1,h2,h3,h4,p,ul,ol{margin:0}
+ul,ol{padding:0}
+svg{display:inline-block;vertical-align:middle;flex:none}
+.hidden{display:none!important}
+.muted{color:var(--muted)}
+.sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+:focus-visible{outline:3px solid rgba(15,107,90,.35);outline-offset:2px}
+
+/* ============================ HEADER ============================ */
+.app-header{
+  position:sticky;top:0;z-index:40;
+  background:linear-gradient(155deg,#0e3d33 0%,#0a2c26 68%,#08241f 100%);
+  color:#f7f3e7;
+  padding:calc(9px + env(safe-area-inset-top)) 14px 11px;
+  box-shadow:0 2px 14px rgba(0,0,0,.16);
+}
+.header-inner{max-width:720px;margin:0 auto}
+.header-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
+.brand{display:flex;align-items:center;gap:9px;font-size:24px;font-weight:850;letter-spacing:-.02em;line-height:1.1}
+.brand-mark{
+  width:30px;height:30px;border-radius:10px;
+  background:linear-gradient(145deg,#f0c568,#d99b31);
+  color:#22300f;display:grid;place-items:center;
+  font-size:17px;font-weight:900;box-shadow:inset 0 1px 0 rgba(255,255,255,.5);
+}
+.header-date{font-size:16px;color:#c6d7d0;margin-top:3px;font-weight:550}
+.header-stats{display:flex;flex-direction:column;align-items:flex-end;gap:5px;padding-bottom:1px}
+.stat-chip{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:16px;font-weight:750;line-height:1.15;
+  padding:4px 10px;border-radius:999px;white-space:nowrap;
+  background:rgba(255,255,255,.09);
+  border:1px solid rgba(255,255,255,.13);
+  color:#eef4ef;
+}
+.stat-chip.domani{background:rgba(77,131,212,.22);border-color:rgba(142,181,240,.28)}
+
+/* ============================ LAYOUT ============================ */
+main{max-width:720px;margin:0 auto;padding:14px 14px 28px}
+.view-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:2px 1px 12px}
+.view-head h1{font-size:27px;line-height:1.1;letter-spacing:-.03em;font-weight:850}
+.view-sub{font-size:16px;color:var(--muted);font-weight:600;text-align:right}
+.section{margin-bottom:18px}
+.panel{
+  background:linear-gradient(160deg,var(--surface) 0%,#fbf7ec 100%);
+  border:1px solid var(--line);
+  border-radius:18px;
+  padding:14px;
+  box-shadow:var(--shadow);
+  margin-bottom:14px;
+}
+.panel-title{font-size:17px;font-weight:800;letter-spacing:-.01em;margin-bottom:8px;display:flex;align-items:center;gap:7px}
+.panel-title svg{width:18px;height:18px}
+.panel-sub{color:var(--muted);font-size:16px}
+.empty{
+  background:rgba(255,253,249,.7);
+  border:1px dashed var(--line-strong);
+  border-radius:16px;
+  padding:22px 16px;
+  text-align:center;
+  color:var(--muted);
+}
+.empty strong{display:block;color:var(--ink);font-size:18px;margin-bottom:4px}
+.empty .btn{margin-top:4px}
+
+/* ============================ BOTTOM NAV ============================ */
+.bottom-nav{
+  position:fixed;left:0;right:0;bottom:0;z-index:50;
+  background:rgba(255,253,248,.96);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  border-top:1px solid var(--line);
+  padding-bottom:env(safe-area-inset-bottom);
+  box-shadow:0 -5px 20px rgba(20,30,25,.07);
+}
+.nav-inner{max-width:720px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}
+.nav-btn{
+  min-height:var(--nav-h);
+  border:0;background:none;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  color:#69756f;font-size:16px;font-weight:700;padding:6px 2px;position:relative;
+}
+.nav-btn svg{width:23px;height:23px}
+.nav-btn[aria-current="page"]{color:var(--accent)}
+.nav-btn[aria-current="page"]::before{
+  content:"";position:absolute;top:0;width:36px;height:3px;border-radius:0 0 5px 5px;
+  background:var(--accent);
+}
+.nav-btn:active{background:rgba(15,107,90,.06)}
+
+/* ============================ BUTTONS ============================ */
+.btn{
+  min-height:48px;
+  padding:10px 14px;
+  border-radius:12px;
+  border:1px solid transparent;
+  background:var(--accent);
+  color:#fff;
+  font-weight:750;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  text-align:center;line-height:1.15;
+  transition:transform .08s ease, background .15s ease;
+}
+.btn svg{width:19px;height:19px}
+.btn:active{transform:scale(.975)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-call{background:linear-gradient(160deg,#19825c,#126b4b);box-shadow:0 4px 12px rgba(25,130,92,.2);width:100%}
+.btn-outline{background:var(--surface);border-color:var(--line-strong);color:var(--ink)}
+.btn-ghost{background:#efebe1;color:#39463f;border-color:#e3ddcf}
+.btn-danger{background:var(--red);color:#fff}
+.btn-sm{min-height:44px;padding:8px 10px;font-size:16px;flex:1;border-radius:11px}
+.btn-call-soft{background:var(--green-soft);color:#145c3a;border-color:#c4e2d2}
+.btn-block{width:100%}
+.btn-confirm{
+  width:100%;min-height:56px;font-size:18px;border-radius:14px;
+  background:linear-gradient(160deg,#0f7a5d,#0b5c47);
+  box-shadow:0 6px 16px rgba(15,122,93,.28);
+}
+.link-btn{
+  border:0;background:none;color:var(--accent);font-weight:700;
+  padding:4px 0;min-height:44px;display:inline-flex;align-items:center;gap:5px;text-align:left;
+}
+.link-btn svg{width:17px;height:17px}
+
+/* ============================ SUMMARY / COUNTERS ============================ */
+.summary-big{font-size:32px;font-weight:900;letter-spacing:-.045em;line-height:1.05}
+.summary-big span{font-size:20px;font-weight:750;color:var(--muted);letter-spacing:0}
+.summary-next{margin-top:6px;color:var(--muted);line-height:1.35}
+.summary-next strong{color:var(--ink)}
+.summary-next .nx-addr{display:block;color:var(--muted)}
+.progress{height:9px;border-radius:999px;background:#e7e2d6;overflow:hidden;margin-top:11px}
+.progress > i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#1a8061,#31ac81);transition:width .4s ease}
+.plan-counter{display:flex;align-items:center;gap:14px}
+.plan-number{font-size:46px;font-weight:900;line-height:.95;letter-spacing:-.055em;white-space:nowrap}
+.plan-number small{font-size:22px;color:var(--muted);font-weight:750;letter-spacing:0}
+.plan-caption{color:var(--muted);line-height:1.3}
+.plan-caption strong{display:block;color:var(--ink);font-size:17px}
+.geo-note{
+  margin-top:11px;padding-top:9px;border-top:1px dashed var(--line);
+  color:var(--muted);font-size:16px;display:flex;align-items:center;gap:6px;
+}
+.geo-note svg{width:16px;height:16px}
+.spinner{
+  width:15px;height:15px;border-radius:50%;
+  border:2px solid #cfd8d3;border-top-color:var(--accent);
+  animation:spin .8s linear infinite;flex:none;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.plan-list{display:flex;flex-direction:column;gap:6px;margin-top:9px}
+.plan-item{
+  display:flex;align-items:center;gap:9px;
+  background:#fff;border:1px solid #cbdaf2;border-left:4px solid var(--blue);
+  border-radius:11px;padding:7px 9px;min-height:48px;
+}
+.plan-num{
+  width:28px;height:28px;border-radius:50%;background:var(--blue-soft);color:var(--blue);
+  display:grid;place-items:center;font-weight:850;font-size:16px;flex:none;
+}
+.plan-item-name{flex:1;min-width:0;font-weight:700;line-height:1.2}
+.plan-item-name small{display:block;color:var(--muted);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.plan-remove{
+  min-width:44px;min-height:44px;border-radius:10px;border:1px solid var(--line);
+  background:#fff;color:var(--red);font-weight:800;font-size:18px;
+}
+.route-list{list-style:none;display:flex;flex-direction:column;gap:6px;margin:10px 0 14px}
+.route-item{display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #cbdaf2;border-radius:11px;padding:7px 9px;min-height:48px}
+.route-item .r-num{width:27px;height:27px;border-radius:50%;background:var(--blue);color:#fff;display:grid;place-items:center;font-weight:850;font-size:16px;flex:none}
+.route-item .r-name{font-weight:700;min-width:0;flex:1;line-height:1.2}
+.route-item .r-name small{display:block;color:var(--muted);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.candidate-label{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  font-size:16px;font-weight:750;color:var(--accent-dark);
+  margin:6px 2px 8px;
+}
+.candidate-label .distance{color:var(--muted);font-weight:600;text-align:right}
+.counter-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.counter{
+  min-height:70px;border:1px solid var(--line);border-radius:12px;
+  background:var(--surface);padding:8px;text-align:left;
+  display:flex;flex-direction:column;justify-content:center;line-height:1.1;
+}
+.counter b{display:block;font-size:23px;letter-spacing:-.03em}
+.counter span{display:block;font-size:16px;color:var(--muted);line-height:1.15;margin-top:2px}
+.counter.active{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 1px var(--accent) inset}
+.counter.active span{color:var(--accent-dark);font-weight:700}
+.recall-chip{
+  width:100%;margin-top:8px;min-height:44px;border:1px solid #ecd9ae;border-radius:11px;
+  background:var(--yellow-soft);color:var(--yellow);font-weight:750;padding:7px 10px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.recall-chip.active{box-shadow:0 0 0 1px var(--yellow) inset}
+
+/* ============================ CARDS ============================ */
+.card{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-left:5px solid #b9b3a6;
+  border-radius:var(--radius);
+  padding:13px;
+  box-shadow:var(--shadow);
+  margin-bottom:10px;
+  overflow:hidden;
+}
+.card.is-selected{border-color:#bfd2f0;border-left-color:var(--blue);box-shadow:0 0 0 2px rgba(37,90,158,.07),var(--shadow)}
+.card.just-touched{animation:cardPulse .55s ease-out}
+@keyframes cardPulse{0%{transform:scale(.992);background:#f4faf6}55%{transform:scale(1.004)}100%{transform:scale(1);background:var(--surface)}}
+.card.state-ritirato,.card.state-gia_riconsegnato{border-left-color:var(--green)}
+.card.state-appuntamento{border-left-color:var(--blue)}
+.card.state-non_risponde,.card.state-da_richiamare{border-left-color:#c28a2a}
+.card.state-fuori_zona,.card.state-cambio_fuori{border-left-color:var(--red)}
+.card.state-cambio_zona{border-left-color:#7a8f86}
+.card-index{
+  width:28px;height:28px;border-radius:50%;flex:none;margin-top:2px;
+  background:#f0ece1;color:#5a665f;font-size:16px;font-weight:800;
+  display:grid;place-items:center;border:1px solid #e2ddcf;
+}
+.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.card-title-wrap{min-width:0;flex:1}
+.card-title{font-size:20px;font-weight:850;letter-spacing:-.02em;line-height:1.18;overflow-wrap:anywhere}
+.card-meta{font-size:16px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+.status-pill{
+  display:inline-flex;align-items:center;
+  font-size:16px;font-weight:750;line-height:1.15;
+  padding:4px 9px;border-radius:999px;white-space:normal;overflow-wrap:anywhere;
+  border:1px solid #ded8ca;background:#f3efe6;color:#4d5a54;
+  flex:none;max-width:48%;text-align:center;line-height:1.15;
+}
+.tone-green{background:var(--green-soft);color:#145c3a;border-color:#c3e2d1}
+.tone-yellow{background:var(--yellow-soft);color:#77490a;border-color:#ecd6a7}
+.tone-red{background:var(--red-soft);color:#8c281f;border-color:#f1c8c2}
+.tone-blue{background:var(--blue-soft);color:#1f4b87;border-color:#c9d8f0}
+.tone-neutral{background:#f0ece2;color:#4e5a54;border-color:#dfd9ca}
+
+/* ============================ BADGES ============================ */
+.badges{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:9px 0 2px}
+.badge{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:16px;line-height:1.15;font-weight:650;
+  padding:4px 8px;border-radius:8px;
+  background:#f1ede3;border:1px solid #e1dbcd;color:#4e5b55;
+}
+button.badge{font-weight:700}
+.badge svg{width:14px;height:14px}
+button.badge{min-height:44px;padding:9px 10px;border-radius:10px}
+.badge-warn{background:var(--yellow-soft);border-color:#ecd5a5;color:#7b4c0b}
+.badge-danger{background:var(--red-soft);border-color:#f0c7c1;color:#8c281f}
+.badge-blue{background:var(--blue-soft);border-color:#c9d8f0;color:#1f4b87}
+.badge-green{background:var(--green-soft);border-color:#c3e2d1;color:#145c3a}
+.badge-edit{background:#eef4ff;border-color:#c9d8f0;color:#255a9e}
+.badge-recall{background:var(--yellow-soft);border-color:#ecd5a5;color:#7b4c0b}
+.mini-mark{font-size:16px;font-weight:650;color:#255a9e;background:#e7effb;border-radius:6px;padding:1px 5px;margin-left:4px}
+
+/* ============================ ADDRESS / PHONE / DEVICES ============================ */
+.address-block{display:flex;align-items:flex-start;gap:8px;margin:10px 0 8px;min-width:0}
+.address-block > svg{width:20px;height:20px;color:#68766f;margin-top:2px}
+.address-block strong{display:block;font-weight:700;line-height:1.25;overflow-wrap:anywhere}
+.address-block span{display:block;color:var(--muted);line-height:1.3;overflow-wrap:anywhere}
+.address-block.small{margin:8px 0}
+.original-note{
+  background:#f4f7fd;border:1px solid #d5e1f5;border-radius:10px;
+  padding:8px 10px;margin:8px 0;color:#3e4d61;line-height:1.35;font-size:16px;
+}
+.original-note strong{color:#253a58}
+.call-block{display:flex;flex-direction:column;gap:7px;margin:10px 0 4px}
+.phone-link{
+  min-height:48px;display:flex;align-items:center;gap:8px;
+  padding:8px 12px;border-radius:12px;
+  background:var(--green-soft);color:#145c3a;border:1px solid #c3e2d1;
+  font-weight:750;line-height:1.2;
+}
+.phone-link svg{width:19px;height:19px}
+.phone-link.secondary{background:#f6f3ea;color:#3f4d46;border-color:var(--line);font-weight:650}
+.phone-link.secondary small{color:var(--muted);font-weight:500}
+.devices{border-top:1px solid var(--line);margin-top:10px;padding-top:9px}
+.devices-title{font-weight:800;font-size:16px;color:#3b4843;display:flex;align-items:center;gap:6px;margin-bottom:3px}
+.devices-title span{font-weight:600;color:var(--muted)}
+.device{padding:5px 0;border-bottom:1px dashed #ece7db}
+.device:last-child{border-bottom:0}
+.device-name{display:block;font-weight:650;line-height:1.25;overflow-wrap:anywhere}
+.device-meta{display:block;color:var(--muted);line-height:1.25;overflow-wrap:anywhere}
+
+/* ============================ OUTCOMES ============================ */
+.outcome-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.outcome-btn{
+  min-height:50px;padding:8px 9px;border-radius:12px;
+  border:1px solid var(--line-strong);background:var(--surface);
+  color:var(--ink);font-weight:700;line-height:1.15;
+  display:flex;align-items:center;justify-content:center;text-align:center;
+  transition:transform .08s ease,background .15s ease;
+  overflow-wrap:anywhere;
+}
+.outcome-btn:active{transform:scale(.965)}
+.outcome-btn.wide{grid-column:1 / -1}
+.esito-appuntamento{background:var(--blue-soft);border-color:#c4d6f1;color:#1d4a86}
+.esito-non_risponde,.esito-da_richiamare{background:var(--yellow-soft);border-color:#ead3a2;color:#754809}
+.esito-fuori_zona,.esito-cambio_fuori{background:var(--red-soft);border-color:#f0c6c0;color:#8c281f}
+.esito-gia_riconsegnato,.esito-ritirato{background:var(--green-soft);border-color:#c1e1cf;color:#135b38}
+.esito-cambio_zona{background:#eef2f0;border-color:#d6e0db;color:#3b5a4d}
+.esito-da_contattare{background:#f2eee4;border-color:#ddd6c7;color:#4f5b55}
+.esito-salta{background:#efede6;border-color:#ddd8ca;color:#55615b;font-weight:650}
+.more-outcomes{margin:8px 0 2px}
+.more-outcomes summary{
+  min-height:44px;display:flex;align-items:center;gap:6px;
+  font-weight:700;color:var(--muted);cursor:pointer;list-style:none;
+  padding:4px 2px;
+}
+.more-outcomes summary::-webkit-details-marker{display:none}
+.more-outcomes summary::before{content:"+";font-weight:850;font-size:18px;color:var(--accent);width:18px;text-align:center}
+.more-outcomes[open] summary::before{content:"−"}
+.more-outcomes .outcome-grid{margin-top:2px}
+.inline-date{display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap}
+.inline-date label{font-weight:650;color:var(--muted)}
+.inline-date input{
+  flex:1;min-width:150px;min-height:46px;padding:7px 10px;
+  border:1px solid var(--line-strong);border-radius:10px;background:#fff;
+}
+.btn-address{
+  width:100%;min-height:50px;margin:8px 0 4px;
+  background:#f6f4ec;border:1px solid var(--line-strong);color:#37463f;
+  font-weight:750;border-radius:12px;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+}
+.btn-address svg{width:18px;height:18px}
+.btn-address.needs-fix{
+  background:#fff7e6;border:2px solid #d79a2c;color:#6d460b;
+  box-shadow:0 0 0 3px rgba(215,154,44,.12);
+}
+.btn.needs-fix{
+  background:#fff7e6;border:2px solid #d79a2c;color:#6d460b;
+  box-shadow:0 0 0 2px rgba(215,154,44,.12);
+}
+
+/* ============================ NOTES ============================ */
+.note-block{margin-top:11px}
+.note-label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:750;margin-bottom:5px}
+.note-status{font-size:16px;font-weight:600;color:var(--green);font-style:normal}
+.note-input{
+  width:100%;min-height:72px;padding:10px 11px;
+  border:1px solid var(--line-strong);border-radius:11px;background:#fff;
+  line-height:1.35;resize:vertical;
+}
+.csv-note{margin-top:8px}
+.csv-note summary{min-height:44px;display:flex;align-items:center;font-weight:650;color:var(--muted);cursor:pointer}
+.csv-notes{
+  white-space:pre-line;background:#faf7ee;border:1px dashed #ded6c2;
+  border-radius:10px;padding:9px 10px;color:#4b4a41;overflow-wrap:anywhere;
+}
+
+/* ============================ ADDRESS GROUPS ============================ */
+.addr-group{margin-bottom:14px}
+.addr-group-head{
+  display:flex;align-items:center;gap:6px;
+  background:#ebe6da;border:1px solid #ddd6c7;border-radius:10px;
+  padding:5px 9px;margin-bottom:8px;
+  font-size:16px;font-weight:750;color:#4b5a54;line-height:1.2;
+}
+.addr-group-head svg{width:15px;height:15px;color:#6e7a73}
+.addr-group-head .addr-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.addr-group-head .count{
+  margin-left:auto;flex:none;background:#fff;border:1px solid #ddd6c7;
+  border-radius:999px;padding:0 7px;font-weight:700;color:#5b6862;
+}
+
+/* ============================ TOTAL VIEW ============================ */
+.search-wrap{position:relative;margin-bottom:9px}
+.search-wrap svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:19px;height:19px;color:#6d7973}
+.search-wrap input{
+  width:100%;min-height:50px;padding:10px 12px 10px 39px;
+  border:1px solid var(--line-strong);border-radius:12px;background:#fff;
+}
+.filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+.filter-grid select{
+  width:100%;min-height:48px;padding:7px 9px;
+  border:1px solid var(--line-strong);border-radius:11px;background:#fff;
+}
+.filter-checks{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:8px 0}
+.check-row{
+  display:flex;align-items:center;gap:7px;min-height:44px;
+  background:#fff;border:1px solid var(--line);border-radius:10px;
+  padding:5px 8px;font-weight:600;line-height:1.15;
+}
+.check-row input{width:21px;height:21px;accent-color:var(--accent);flex:none}
+.check-row.wide{grid-column:1 / -1}
+.filter-actions{display:flex;gap:8px;margin-top:8px}
+.filter-actions .btn{flex:1;min-height:44px;font-size:16px}
+.results-meta{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--muted);margin:12px 2px 8px;font-weight:600}
+.results-meta strong{color:var(--ink)}
+.trow{
+  background:var(--surface);border:1px solid var(--line);border-left:4px solid #b9b3a6;
+  border-radius:13px;padding:10px;margin-bottom:8px;box-shadow:0 1px 1px rgba(20,30,25,.03);
+}
+.trow.is-selected{border-color:#bfd2f0;border-left-color:var(--blue);box-shadow:0 0 0 2px rgba(37,90,158,.07)}
+.trow.state-ritirato,.trow.state-gia_riconsegnato{border-left-color:var(--green)}
+.trow.state-appuntamento{border-left-color:var(--blue)}
+.trow.state-non_risponde,.trow.state-da_richiamare{border-left-color:#c28a2a}
+.trow.state-fuori_zona,.trow.state-cambio_fuori{border-left-color:var(--red)}
+.trow.just-touched{animation:cardPulse .55s ease-out}
+.trow-main{display:flex;align-items:flex-start;gap:8px}
+.trow-toggle{
+  flex:1;min-width:0;min-height:44px;border:0;background:none;padding:0;text-align:left;
+}
+.trow-name{display:block;font-weight:800;font-size:17px;line-height:1.2;letter-spacing:-.01em;overflow-wrap:anywhere}
+.trow-meta{display:block;color:var(--muted);line-height:1.25;margin-top:1px;overflow-wrap:anywhere}
+.trow-actions{display:flex;gap:7px;margin-top:7px}
+.trow-details{padding-top:9px;margin-top:9px;border-top:1px dashed var(--line);animation:detailsIn .18s ease-out}
+@keyframes detailsIn{from{opacity:.4;transform:translateY(-3px)}to{opacity:1;transform:none}}
+.trow-details .devices{margin-top:8px}
+.trow-details .outcome-grid{margin-top:10px}
+
+/* ============================ SETTINGS ============================ */
+.settings-section{
+  background:var(--surface);border:1px solid var(--line);border-radius:16px;
+  padding:14px;margin-bottom:12px;box-shadow:var(--shadow);
+}
+.settings-section h2{font-size:18px;font-weight:850;letter-spacing:-.015em;margin-bottom:9px;display:flex;align-items:center;gap:7px}
+.settings-section h2 svg{width:20px;height:20px}
+.setting-stack{display:flex;flex-direction:column;gap:8px}
+.setting-btn{
+  width:100%;min-height:50px;border:1px solid var(--line-strong);border-radius:12px;
+  background:#fff;color:var(--ink);font-weight:700;padding:9px 12px;
+  display:flex;align-items:center;gap:9px;text-align:left;
+}
+.setting-btn svg{width:20px;height:20px;color:var(--accent)}
+.setting-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.setting-btn.primary svg{color:#fff}
+.setting-btn.danger{background:var(--red-soft);border-color:#eec3bd;color:#8c281f}
+.setting-btn.danger svg{color:#8c281f}
+.setting-btn small{display:block;color:var(--muted);font-weight:500;line-height:1.2;font-size:16px;margin-top:1px}
+.setting-btn.primary small{color:#d8ece4}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed var(--line);line-height:1.3}
+.kv:last-child{border-bottom:0}
+.kv span{color:var(--muted);font-weight:600}
+.kv strong{text-align:right;font-weight:750;overflow-wrap:anywhere}
+.note-box{
+  background:#f7f4ea;border:1px solid var(--line);border-radius:12px;
+  padding:10px 11px;color:#4b5751;line-height:1.4;
+}
+.note-box strong{color:var(--ink)}
+.status-ok{color:var(--green);font-weight:750}
+.status-bad{color:var(--red);font-weight:750}
+details.help{margin-top:8px}
+details.help summary{min-height:44px;display:flex;align-items:center;font-weight:650;color:var(--muted);cursor:pointer}
+details.help .note-box{margin-top:4px}
+
+/* ============================ MODAL ============================ */
+.modal-backdrop{
+  position:fixed;inset:0;z-index:100;
+  background:rgba(8,20,16,.56);
+  -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+  display:flex;align-items:flex-end;justify-content:center;
+  animation:fadeIn .18s ease-out;
+}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{
+  width:100%;max-width:720px;max-height:92vh;overflow:auto;
+  background:var(--surface);
+  border-radius:20px 20px 0 0;
+  padding:16px 16px calc(18px + env(safe-area-inset-bottom));
+  box-shadow:0 -14px 50px rgba(0,0,0,.3);
+  animation:sheetUp .24s cubic-bezier(.2,.8,.3,1);
+}
+@keyframes sheetUp{from{transform:translateY(30px);opacity:.6}to{transform:none;opacity:1}}
+@media(min-width:640px){
+  .modal-backdrop{align-items:center;padding:20px}
+  .modal{border-radius:20px;max-width:580px;padding-bottom:18px}
+}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:4px}
+.modal-head h2{font-size:21px;font-weight:850;letter-spacing:-.02em;line-height:1.2}
+.modal-close{
+  width:44px;height:44px;border-radius:50%;border:1px solid var(--line);
+  background:#fff;color:#4f5c56;display:grid;place-items:center;flex:none;
+  font-size:22px;line-height:1;
+}
+.modal-sub{color:var(--muted);line-height:1.35;margin-bottom:8px}
+.modal-original{
+  background:#f7f4ea;border:1px dashed var(--line-strong);border-radius:10px;
+  padding:8px 10px;color:#4d5a54;line-height:1.35;margin:8px 0;
+}
+.transfer-note{
+  background:#fff7e6;border:1px solid #e8d3a0;border-radius:10px;
+  padding:9px 10px;color:#6d460b;line-height:1.35;margin:8px 0;
+}
+.field{display:block;margin:11px 0}
+.field > span{display:block;font-weight:700;margin-bottom:5px}
+.field input{
+  width:100%;min-height:50px;padding:9px 11px;
+  border:1px solid var(--line-strong);border-radius:11px;background:#fff;
+}
+.field input:focus,.field input:focus-visible{border-color:var(--accent)}
+.field-hint{display:block;color:var(--muted);margin-top:4px;line-height:1.3}
+.form-error{
+  background:var(--red-soft);color:#8c281f;border:1px solid #eec3bd;
+  border-radius:10px;padding:8px 10px;margin:8px 0;font-weight:650;
+}
+.modal-actions{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.issue-list{margin:6px 0 0 18px;color:#6d460b;line-height:1.35}
+.issue-list li{margin:2px 0}
+
+/* ============================ TOAST / BANNER ============================ */
+.persist-banner{
+  position:fixed;left:0;right:0;z-index:49;
+  bottom:calc(var(--nav-h) + env(safe-area-inset-bottom));
+  background:#fff2d2;color:#5c430f;border-top:1px solid #ead4a1;
+  padding:7px 14px;text-align:center;font-size:16px;font-weight:650;line-height:1.25;
+}
+.toast{
+  position:fixed;left:50%;z-index:200;
+  bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 16px);
+  transform:translate(-50%,16px);opacity:0;pointer-events:none;
+  max-width:calc(100% - 28px);width:max-content;
+  background:#143b32;color:#fff;border:1px solid rgba(255,255,255,.1);
+  padding:10px 15px;border-radius:12px;text-align:center;font-weight:650;
+  box-shadow:0 10px 34px rgba(0,0,0,.28);transition:opacity .2s ease,transform .2s ease;
+  line-height:1.3;
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.toast.warn{background:#7a4c0a}
+.toast.err{background:#8e2a22}
+body.storage-blocked .toast{bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 66px)}
+
+/* ============================ RESPONSIVE / MOTION ============================ */
+@media(min-width:640px){
+  .outcome-grid{grid-template-columns:repeat(4,1fr)}
+  .filter-checks{grid-template-columns:repeat(4,1fr)}
+  .filter-checks .check-row.wide{grid-column:auto}
+}
+@media(max-width:359px){
+  .counter-grid{grid-template-columns:repeat(2,1fr)}
+  .filter-grid{grid-template-columns:1fr}
+  .filter-checks{grid-template-columns:1fr}
+  .filter-checks .check-row.wide{grid-column:auto}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}
+}
+</style>
+</head>
+<body>
+<header class="app-header">
+  <div class="header-inner">
+    <div class="header-row">
+      <div>
+        <div class="brand"><span class="brand-mark" aria-hidden="true">R</span>Ritiri</div>
+        <div class="header-date" id="header-date">—</div>
+      </div>
+      <div class="header-stats">
+        <span class="stat-chip" id="stat-oggi">Oggi: 0/7</span>
+        <span class="stat-chip domani" id="stat-domani">Domani: 0/7</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="app" aria-live="off"></main>
+
+<div class="persist-banner hidden" id="persist-banner" role="status">
+  Persistenza locale non disponibile — usa Salva stato / Carica stato
+</div>
+
+<nav class="bottom-nav" aria-label="Navigazione principale">
+  <div class="nav-inner">
+    <button class="nav-btn" data-nav="oggi" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      Oggi
+    </button>
+    <button class="nav-btn" data-nav="domani">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M8 14h3M8 17h6"/></svg>
+      Domani
+    </button>
+    <button class="nav-btn" data-nav="totale">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="3.5" cy="18" r="1.2" fill="currentColor" stroke="none"/></svg>
+      Totale
+    </button>
+    <button class="nav-btn" data-nav="impostazioni">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.14.38.36.72.66 1 .3.28.69.43 1.1.43H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5.57z"/></svg>
+      Impostazioni
+    </button>
+  </div>
+</nav>
+
+<div id="modal-root"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script type="text/csv" id="seed-csv">
+Work Order,ID attività,Data,Stato attività,Tipo di attività,Modello,Descrizione Modello,Asset da Prelevare,Ragione Sociale Cliente,Codice Cliente,Codice Fiscale Paziente,Descrizione Paziente,Codice Paziente,Descrizione PdC,Codice PdC,Indirizzo,Città,CAP,Telefono,Inizio - fine,Durata,Stato disponibilità Asset,Materiale Prelevabile da,Esito Intervento,Note Intervento
+"WO-DEMO-001","D001","-","in sospeso","RITIRO","DEMO-MODEL-01","DISPOSITIVO DEMO 01","ASSET-DEMO-001","CLIENTE DEMO","9000","","MARIO DEMO","DEMO001","","","PIAZZA SAN LORENZO 1","VITERBO","01100","0000000001","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-002","D002","-","in sospeso","RITIRO","DEMO-MODEL-02","DISPOSITIVO DEMO 02","ASSET-DEMO-002","CLIENTE DEMO","9000","","LUCIA ESEMPIO","DEMO002","","","PIAZZA SAN LORENZO 1","VITERBO","01100","0000000002","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-003","D003","-","in sospeso","RITIRO","DEMO-MODEL-03","DISPOSITIVO DEMO 03","ASSET-DEMO-003","CLIENTE DEMO","9000","","GIUSEPPE PROVA","DEMO003","","","PIAZZA VITTORIO EMANUELE 1","RIETI","02100","0000000003","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-004","D004","-","in sospeso","RITIRO","DEMO-MODEL-04","DISPOSITIVO DEMO 04","ASSET-DEMO-004","CLIENTE DEMO","9000","","GIUSEPPE PROVA","DEMO003","","","PIAZZA VITTORIO EMANUELE 1","RIETI","02100","0000000003","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-005","D005","-","in sospeso","RITIRO","DEMO-MODEL-05","DISPOSITIVO DEMO 05","ASSET-DEMO-005","CLIENTE DEMO","9000","","GIUSEPPE PROVA","DEMO003","","","PIAZZA VITTORIO EMANUELE 1","RIETI","02100","0000000003","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-006","D006","-","in sospeso","RITIRO","DEMO-MODEL-06","DISPOSITIVO DEMO 06","ASSET-DEMO-006","CLIENTE DEMO","9000","","ANNA TEST","DEMO004","","","PIAZZA DEL POPOLO 1","ROMA","00100","0000000004","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-007","D007","-","in sospeso","RITIRO","DEMO-MODEL-07","DISPOSITIVO DEMO 07","ASSET-DEMO-007","CLIENTE DEMO","9000","","PAOLO CAMPIONE","DEMO005","","","LOC DEMO","CIVITELLA D'AGLIANO","01020","0000000005","00:00 - 00:10","00:10","Asset Disponibile","","","Numero secondario demo 0000000"
+"WO-DEMO-008","D008","-","in sospeso","RITIRO","DEMO-MODEL-08","DISPOSITIVO DEMO 08","ASSET-DEMO-008","CLIENTE DEMO","9000","","ELENA FINZIONE","DEMO006","","","PIAZZA ROMA 7","MONTEFIASCONE","01027","","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-009","D009","-","in sospeso","RITIRO","DEMO-MODEL-09","DISPOSITIVO DEMO 09","ASSET-DEMO-009","CLIENTE DEMO","9000","","FRANCO INVENTATO","DEMO007","","","PIAZZA SAN LORENZO 1","VITERBO","01100","0000000007","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-010","D010","-","in sospeso","RITIRO","DEMO-MODEL-10","DISPOSITIVO DEMO 10","ASSET-DEMO-010","CLIENTE DEMO","9000","","CARLA FITTIZIA","DEMO008","","","PIAZZA ROMA 9","ORVINIO","02035","12345","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-011","D011","-","in sospeso","RITIRO","DEMO-MODEL-11","DISPOSITIVO DEMO 11","ASSET-DEMO-011","CLIENTE DEMO","9000","","GIORGIO SIMULATO","DEMO009","","","PIAZZA ROMA 3","FABRICA DI ROMA","01034","0000000009","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-012","D012","-","in sospeso","RITIRO","DEMO-MODEL-12","DISPOSITIVO DEMO 12","ASSET-DEMO-012","CLIENTE DEMO","9000","","SILVIA ESEMPIO","DEMO010","","","PIAZZA ROMA 5","ACQUAPENDENTE","1021","0000000010","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-013","D013","-","in sospeso","RITIRO","DEMO-MODEL-13","DISPOSITIVO DEMO 13","ASSET-DEMO-013","CLIENTE DEMO","9000","","ROBERTO FINTO","DEMO011","","","PIAZZA DEL POPOLO 1","ROMA","00100","0000000011","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-014","D014","-","in sospeso","RITIRO","DEMO-MODEL-14","DISPOSITIVO DEMO 14","ASSET-DEMO-014","CLIENTE DEMO","9000","","TERESA MODELLO","DEMO012","","","PIAZZA DELLA REPUBBLICA 1","VITERBO","01100","0000000012","00:00 - 00:10","00:10","Asset Disponibile","","",""
+"WO-DEMO-015","D015","-","in sospeso","RITIRO","DEMO-MODEL-15","DISPOSITIVO DEMO 15","ASSET-DEMO-015","CLIENTE DEMO","9000","","TERESA MODELLO","DEMO012","","","PIAZZA DELLA REPUBBLICA 1","VITERBO","01100","0000000012","00:00 - 00:10","00:10","Asset Disponibile","","",""
+</script>
+
+<script>
+/* ==========================================================================
+   APP LOGIC — vanilla JS, nessuna dipendenza esterna
+   ========================================================================== */
+'use strict';
+
+/* ==========================================================================
+   1. COSTANTI E STATO
+   ========================================================================== */
+const TARGET = 7;                 // persone da selezionare per domani
+const GEO_RADIUS_KM = 15;         // raggio del clustering spaziale
+const OSRM_MAX_NODES = 36;        // limite nodi per non fare troppe richieste
+const OSRM_CHUNK_SIZE = 12;       // 12+12 = 24 <= 25 nodi per richiesta
+const NOMINATIM_DELAY_MS = 1100;  // 1 richiesta/secondo (policy uso pubblico)
+const OSRM_DELAY_MS = 900;
+
+const STORAGE_KEYS = {
+  csv: 'dati_csv',
+  esiti: 'esiti',
+  geo: 'geocoding_cache',
+  osrm: 'osrm_cache',
+  oggi: 'giornata_oggi',
+  domani: 'giornata_domani',
+  settings: 'impostazioni'
+};
+
+const CSV_BASE_COLUMNS = [
+  'Work Order', 'ID attività', 'Data', 'Stato attività', 'Tipo di attività',
+  'Modello', 'Descrizione Modello', 'Asset da Prelevare', 'Ragione Sociale Cliente',
+  'Codice Cliente', 'Codice Fiscale Paziente', 'Descrizione Paziente',
+  'Codice Paziente', 'Descrizione PdC', 'Codice PdC', 'Indirizzo', 'Città',
+  'CAP', 'Telefono', 'Inizio - fine', 'Durata', 'Stato disponibilità Asset',
+  'Materiale Prelevabile da', 'Esito Intervento', 'Note Intervento'
+];
+
+const EXPORT_EXTRA_COLUMNS = [
+  'StatoCalcolato', 'GiornoAppuntamento', 'DataUltimoContatto', 'Lat', 'Lon',
+  'NoteOperatore', 'TelefonoNormalizzato', 'TelefonoSecondario', 'FuoriZonaSiNo',
+  'IndirizzoOriginale', 'CittaOriginale', 'CAPOriginale',
+  'DataModificaIndirizzo', 'MotivoModificaIndirizzo'
+];
+
+const STATES = {
+  da_contattare:    { label: 'Da contattare', tone: 'neutral' },
+  appuntamento:     { label: 'Appuntamento fissato', tone: 'blue' },
+  non_risponde:     { label: 'Non risponde', tone: 'yellow' },
+  da_richiamare:    { label: 'Da richiamare', tone: 'yellow' },
+  cambio_zona:      { label: 'Cambio residenza – in zona', tone: 'neutral' },
+  cambio_fuori:     { label: 'Cambio residenza – fuori zona', tone: 'red' },
+  fuori_zona:       { label: 'Fuori zona', tone: 'red' },
+  gia_riconsegnato: { label: 'Già riconsegnato', tone: 'green' },
+  ritirato:         { label: 'Ritirato', tone: 'green' }
+};
+
+const DONE_STATES = new Set(['fuori_zona', 'cambio_fuori', 'gia_riconsegnato', 'ritirato']);
+const ELIGIBLE_STATES = new Set(['da_contattare', 'appuntamento', 'non_risponde', 'da_richiamare', 'cambio_zona']);
+const STATE_ORDER = ['da_contattare', 'appuntamento', 'non_risponde', 'da_richiamare', 'cambio_zona', 'cambio_fuori', 'fuori_zona', 'gia_riconsegnato', 'ritirato'];
+const CITY_PARTICLES = new Set(['di','da','del','dello','della','dei','degli','delle','in','a','al','allo','alla','ai','agli','alle','su','sul','sullo','sulla','sui','sugli','sulle','per','e']);
+const NAME_PARTICLES = new Set(['de','del','della','di','da','dos','la','le','lo','van','von']);
+
+const state = {
+  rawCsv: '',
+  headers: [],
+  rows: [],
+  people: new Map(),
+  personList: [],
+  esiti: {},
+  geocache: {},
+  osrmcache: {},
+  oggi: [],
+  domani: [],
+  settings: { raggruppa: true },
+  storageOK: false,
+  meta: {
+    cityCaps: new Map(),
+    capCities: new Map(),
+    hasUppercaseCity: false
+  },
+  ui: {
+    view: 'oggi',
+    expanded: new Set(),
+    showOriginal: new Set(),
+    sessionHandled: new Set(),
+    lastTouched: null,
+    modal: null,
+    resetScroll: false,
+    filter: {
+      stato: '', cap: '', citta: '', search: '',
+      ricontattare: false, telSospetto: false, capSospetto: false, indirizzoIncerto: false
+    }
+  },
+  geo: {
+    running: false, done: 0, total: 0, failed: false, offline: false,
+    gen: 0, rerun: false
+  },
+  osrm: {
+    building: false, codes: [], matrix: null, key: '', failedKey: '', failed: false
+  }
+};
+
+let saveTimer = null;
+let toastTimer = null;
+let osrmTimer = null;
+let osrmEpoch = 0;
+let resetArmedUntil = 0;
+let lastModalFocus = null;
+
+/* ==========================================================================
+   2. UTILITÀ GENERALI
+   ========================================================================== */
+function clean(value) {
+  return value === null || value === undefined ? '' : String(value).replace(/\u0000/g, '').trim();
+}
+
+function normAddress(value) {
+  return clean(value).replace(/\s+/g, ' ');
+}
+
+function isValidCap(value) {
+  return /^\d{5}$/.test(clean(value));
+}
+
+function hashString(value) {
+  let h = 5381;
+  const str = String(value);
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
+function escapeHtml(value) {
+  return String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+const esc = escapeHtml;
+
+function parseJSON(value, fallback) {
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed === null ? fallback : parsed;
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function asStringArray(value) {
+  return Array.isArray(value) ? value.filter(item => typeof item === 'string') : [];
+}
+
+function capitalize(value) {
+  const str = String(value || '');
+  return str ? str.charAt(0).toLocaleUpperCase('it-IT') + str.slice(1) : '';
+}
+
+function capWord(word) {
+  if (!word) return '';
+  return word.charAt(0).toLocaleUpperCase('it-IT') + word.slice(1);
+}
+
+/* Titolo leggibile per città e nomi, con particelle italiane minuscole. */
+function titleCaseCity(raw) {
+  const lower = clean(raw).toLowerCase().replace(/\s+/g, ' ');
+  if (!lower) return '';
+  return lower.split(' ').map((word, index) => {
+    if (word.includes("'")) {
+      return word.split("'").map((part, partIndex) => {
+        if (!part) return '';
+        if (partIndex === 0 && part === 'd' && index > 0) return part;
+        return capWord(part);
+      }).join("'");
+    }
+    if (index > 0 && CITY_PARTICLES.has(word)) return word;
+    return capWord(word);
+  }).join(' ');
+}
+
+function formatName(raw) {
+  const lower = clean(raw).toLowerCase().replace(/\s+/g, ' ');
+  if (!lower) return '';
+  return lower.split(' ').map((word, index) => {
+    if (word.includes("'")) {
+      return word.split("'").map((part, partIndex) => {
+        if (!part) return '';
+        if (partIndex === 0 && part === 'd' && index > 0) return part;
+        return capWord(part);
+      }).join("'");
+    }
+    if (index > 0 && NAME_PARTICLES.has(word)) return word;
+    return capWord(word);
+  }).join(' ');
+}
+
+function cityKey(value) {
+  return clean(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeSearch(value) {
+  return clean(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/*
+ * Normalizzazione telefono:
+ * - rimuove prefisso internazionale 0039 o +39
+ * - rimuove spazi, trattini, punti e qualsiasi carattere non numerico
+ * - memorizza solo cifre; il numero è "sospetto" (non bloccante) se la
+ *   lunghezza non è 10 (mobile/fisso italiano) né 6-8 (fisso breve).
+ */
+function normalizePhone(raw) {
+  let digits = clean(raw).replace(/[^\d+]/g, '');
+  digits = digits.replace(/^\+39/, '').replace(/^0039/, '');
+  return digits.replace(/\D/g, '');
+}
+
+function phoneIsSuspicious(digits) {
+  const len = String(digits || '').length;
+  return len > 0 && len !== 10 && !(len >= 6 && len <= 8);
+}
+
+function formatPhone(digits) {
+  const d = String(digits || '');
+  if (d.length === 10) return d.replace(/^(\d{3})(\d{3})(\d{4})$/, '$1 $2 $3');
+  if (d.length >= 6 && d.length <= 8) return d.replace(/^(\d{3,4})(\d{3,4})$/, '$1 $2');
+  return d;
+}
+
+/*
+ * Telefoni secondari nelle note: usa la regex richiesta, con parola chiave
+ * separata per mobile (3xx) e fisso (0xx). I numeri trovati vengono
+ * normalizzati e deduplicati rispetto al telefono principale.
+ */
+function extractSecondaryPhones(notes, primary) {
+  const text = String(notes || '');
+  const re = /\b(?:\+?39)?[\s\-]?3\d{2}[\s\-]?\d{6,7}\b|\b0\d{1,3}[\s\/\-]?\d{5,8}\b/g;
+  const found = [];
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const number = normalizePhone(match[0]);
+    if (number && number !== primary && !found.includes(number)) found.push(number);
+  }
+  return found;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function isoDate(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function todayISO() { return isoDate(new Date()); }
+
+function tomorrowISO() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return isoDate(date);
+}
+
+function nowISO() { return new Date().toISOString(); }
+
+function parseLocalDate(iso) {
+  const parts = String(iso || '').split('-').map(Number);
+  if (parts.length !== 3 || !parts[0]) return null;
+  const date = new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1, 12, 0, 0);
+  return isNaN(date.getTime()) ? null : date;
+}
+
+function formatLongDate(iso) {
+  const date = parseLocalDate(iso);
+  return date ? date.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' }) : '';
+}
+
+function formatShortDate(iso) {
+  if (!iso) return '';
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? parseLocalDate(iso) : new Date(iso);
+  if (!date || isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function formatDateTime(iso) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return iso;
+  return date.toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function haptic() {
+  try {
+    if (navigator.vibrate) navigator.vibrate(14);
+  } catch (err) { /* iOS ignora: nessun problema */ }
+}
+
+function showToast(message, kind) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = message;
+  el.className = 'toast show' + (kind === 'warn' ? ' warn' : kind === 'err' ? ' err' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.remove('show'); }, 3300);
+}
+
+function isTyping() {
+  const active = document.activeElement;
+  return !!active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable);
+}
+
+function downloadBlob(content, filename, mime) {
+  try {
+    const blob = new Blob([content], { type: mime || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  } catch (err) {
+    console.error('Download non riuscito', err);
+    showToast('Download non riuscito su questo browser.', 'err');
+  }
+}
+
+function readFileText(file) {
+  if (file && typeof file.text === 'function') return file.text();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Lettura del file non riuscita'));
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+function haversineKm(a, b) {
+  if (!a || !b) return 0;
+  const R = 6371;
+  const toRad = deg => deg * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function centroidOfPeople(people) {
+  const coords = people.map(p => geoCoord(p)).filter(Boolean);
+  if (!coords.length) return null;
+  return {
+    lat: coords.reduce((sum, c) => sum + c.lat, 0) / coords.length,
+    lon: coords.reduce((sum, c) => sum + c.lon, 0) / coords.length
+  };
+}
+
+/* ==========================================================================
+   3. PARSER CSV ROBUSTO
+   ==========================================================================
+   - Rimuove il BOM (EF BB BF) dal primo campo.
+   - Supporta campi tra doppi apici, virgole/apici interni e "" come escape.
+   - Rileva il separatore: se la prima riga ha più ";" che ",", usa ";".
+   - Gestisce fine riga \n, \r\n e campi con newline interni.
+   ========================================================================== */
+function stripBOM(text) {
+  return text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+}
+
+function detectDelimiter(text) {
+  const firstLine = String(text).split(/\r?\n/, 1)[0] || '';
+  let inQuotes = false;
+  let commas = 0;
+  let semicolons = 0;
+  for (let i = 0; i < firstLine.length; i++) {
+    const ch = firstLine[i];
+    if (ch === '"') inQuotes = !inQuotes;
+    else if (!inQuotes && ch === ',') commas++;
+    else if (!inQuotes && ch === ';') semicolons++;
+  }
+  return semicolons > commas ? ';' : ',';
+}
+
+function parseCSV(text) {
+  const source = stripBOM(String(text || ''));
+  const delimiter = detectDelimiter(source);
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (source[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === delimiter) {
+      row.push(field);
+      field = '';
+    } else if (ch === '\n') {
+      row.push(field);
+      field = '';
+      rows.push(row);
+      row = [];
+    } else if (ch === '\r') {
+      // gestito insieme a \r\n: il \n successivo chiuderà la riga
+    } else {
+      field += ch;
+    }
+  }
+  if (field.length || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  const cleanedRows = rows.filter(r => r.some(cell => clean(cell) !== ''));
+  return { rows: cleanedRows, delimiter };
+}
+
+function validateCSV(parsed) {
+  if (!parsed.rows.length) throw new Error('Il file CSV è vuoto.');
+  const header = parsed.rows[0].map(h => clean(h));
+  const required = ['Codice Paziente', 'Descrizione Paziente', 'Indirizzo', 'Città', 'CAP', 'Telefono'];
+  const missing = required.filter(name => !header.includes(name));
+  if (missing.length) throw new Error('Colonne mancanti: ' + missing.join(', '));
+  return header;
+}
+
+function rowsFromParsed(parsed, header) {
+  const rows = [];
+  for (let i = 1; i < parsed.rows.length; i++) {
+    const values = parsed.rows[i];
+    if (!values.some(v => clean(v) !== '')) continue;
+    const row = {};
+    header.forEach((name, index) => {
+      if (name) row[name] = values[index] !== undefined ? values[index] : '';
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
+/* ==========================================================================
+   4. MODELLO PERSONE / DISPOSITIVI
+   ========================================================================== */
+function patientCode(row) {
+  const raw = clean(row['Codice Paziente']);
+  if (raw) return raw;
+  return 'NOPAZ-' + hashString(clean(row['Descrizione Paziente']) + '|' + normAddress(row['Indirizzo']));
+}
+
+function buildPeople() {
+  state.people = new Map();
+  state.personList = [];
+  state.meta = { cityCaps: new Map(), capCities: new Map(), hasUppercaseCity: false };
+
+  for (const row of state.rows) {
+    const code = patientCode(row);
+    let person = state.people.get(code);
+    const rawCity = clean(row['Città']);
+    const address = normAddress(row['Indirizzo']);
+
+    if (!person) {
+      person = {
+        code,
+        nome: formatName(row['Descrizione Paziente']) || 'Paziente senza nome',
+        nomeRaw: clean(row['Descrizione Paziente']),
+        cf: clean(row['Codice Fiscale Paziente']),
+        cliente: clean(row['Ragione Sociale Cliente']),
+        codiceCliente: clean(row['Codice Cliente']),
+        telefono: normalizePhone(row['Telefono']),
+        telefonoRaw: clean(row['Telefono']),
+        secondari: [],
+        indirizzo: address,
+        indirizzoRaw: clean(row['Indirizzo']),
+        citta: titleCaseCity(rawCity),
+        cittaRaw: rawCity,
+        cap: clean(row['CAP']),
+        indirizzoOriginale: address,
+        cittaOriginale: titleCaseCity(rawCity),
+        capOriginale: clean(row['CAP']),
+        rows: [],
+        dispositivi: [],
+        noteIntervento: '',
+        noteOperatore: '',
+        stato: 'da_contattare',
+        giornoAppuntamento: '',
+        dataUltimoContatto: '',
+        fuoriZona: false,
+        modificato: false,
+        indirizzoPrecedente: '',
+        dataModificaIndirizzo: '',
+        motivoModifica: '',
+        log: [],
+        telSospetto: false,
+        telMancante: false,
+        capSospetto: false,
+        indirizzoIncerto: false,
+        indirizzoProblemi: []
+      };
+      person._deviceKeys = new Set();
+      person._noteSet = new Set();
+      state.people.set(code, person);
+      state.personList.push(person);
+    }
+
+    person.rows.push(row);
+
+    const note = clean(row['Note Intervento']);
+    if (note && !person._noteSet.has(note)) {
+      person._noteSet.add(note);
+      person.noteIntervento = person.noteIntervento ? person.noteIntervento + '\n' + note : note;
+    }
+
+    /* Se la prima riga ha campi vuoti, completa da righe successive. */
+    if (!person.telefono) person.telefono = normalizePhone(row['Telefono']);
+    if (!person.indirizzo && address) {
+      person.indirizzo = address;
+      person.indirizzoOriginale = address;
+      person.indirizzoRaw = clean(row['Indirizzo']);
+    }
+    if (!person.citta && rawCity) {
+      person.citta = titleCaseCity(rawCity);
+      person.cittaOriginale = person.citta;
+      person.cittaRaw = rawCity;
+    }
+    if (!person.cap) {
+      person.cap = clean(row['CAP']);
+      person.capOriginale = person.cap;
+    }
+
+    const device = {
+      workOrder: clean(row['Work Order']),
+      idAttivita: clean(row['ID attività']),
+      data: clean(row['Data']),
+      statoAttivita: clean(row['Stato attività']),
+      tipo: clean(row['Tipo di attività']),
+      modello: clean(row['Modello']),
+      descrizioneModello: clean(row['Descrizione Modello']),
+      asset: clean(row['Asset da Prelevare']),
+      descrizionePdC: clean(row['Descrizione PdC']),
+      codicePdC: clean(row['Codice PdC']),
+      materiale: clean(row['Materiale Prelevabile da'])
+    };
+    const deviceKey = [device.workOrder, device.asset, device.modello].join('|') || String(person.rows.length);
+    if (!person._deviceKeys.has(deviceKey)) {
+      person._deviceKeys.add(deviceKey);
+      person.dispositivi.push(device);
+    }
+  }
+
+  for (const person of state.personList) {
+    person.secondari = extractSecondaryPhones(person.noteIntervento, person.telefono);
+    const ck = cityKey(person.citta);
+    if (ck && person.cap) {
+      if (!state.meta.cityCaps.has(ck)) state.meta.cityCaps.set(ck, new Set());
+      state.meta.cityCaps.get(ck).add(person.cap);
+      if (isValidCap(person.cap)) {
+        if (!state.meta.capCities.has(person.cap)) state.meta.capCities.set(person.cap, new Set());
+        state.meta.capCities.get(person.cap).add(ck);
+      }
+    }
+    if (/[A-ZÀ-ÖØ-Þ]/.test(person.cittaRaw)) state.meta.hasUppercaseCity = true;
+    if (phoneIsSuspicious(person.telefono)) person.telSospetto = true;
+  }
+}
+
+function applyEsiti() {
+  for (const person of state.personList) {
+    const saved = state.esiti[person.code];
+    if (!saved || typeof saved !== 'object') continue;
+
+    if (STATES[saved.stato]) person.stato = saved.stato;
+    person.giornoAppuntamento = clean(saved.giornoAppuntamento);
+    person.dataUltimoContatto = clean(saved.dataUltimoContatto);
+    person.noteOperatore = typeof saved.noteOperatore === 'string' ? saved.noteOperatore : '';
+    person.fuoriZona = !!saved.fuoriZona;
+    if (person.stato === 'fuori_zona' || person.stato === 'cambio_fuori') person.fuoriZona = true;
+    if (person.stato !== 'appuntamento') person.giornoAppuntamento = '';
+    person.log = Array.isArray(saved.log) ? saved.log : [];
+
+    if (saved.modificato) {
+      if (typeof saved.indirizzo === 'string') person.indirizzo = normAddress(saved.indirizzo);
+      if (typeof saved.citta === 'string') person.citta = titleCaseCity(saved.citta);
+      if (typeof saved.cap === 'string') person.cap = clean(saved.cap);
+      if (typeof saved.indirizzoRaw === 'string') person.indirizzoRaw = saved.indirizzoRaw;
+      if (typeof saved.cittaRaw === 'string') person.cittaRaw = saved.cittaRaw;
+      person.modificato = true;
+      person.indirizzoPrecedente = clean(saved.indirizzoPrecedente);
+      person.dataModificaIndirizzo = clean(saved.dataModificaIndirizzo);
+      person.motivoModifica = clean(saved.motivoModifica);
+    }
+
+    if (person.fuoriZona && !DONE_STATES.has(person.stato)) person.stato = 'fuori_zona';
+  }
+}
+
+function computeFlags() {
+  for (const person of state.personList) {
+    person.telMancante = !person.telefono;
+    person.telSospetto = phoneIsSuspicious(person.telefono);
+    person.capSospetto = !isValidCap(person.cap);
+
+    const issues = [];
+    if (!person.indirizzo) issues.push('Indirizzo mancante');
+    if (!person.citta) issues.push('Città mancante');
+    if (person.capSospetto) issues.push('CAP non di 5 cifre');
+
+    const ck = cityKey(person.citta);
+    if (isValidCap(person.cap) && ck && state.meta.cityCaps.has(ck)) {
+      const caps = state.meta.cityCaps.get(ck);
+      if (caps.size && !caps.has(person.cap)) {
+        issues.push('CAP ' + person.cap + ' non coerente con ' + person.citta);
+      }
+    }
+
+    if (/^(loc\.?|località|localita|sp\.?|spiaggia)\b/i.test(person.indirizzo) && !/\d/.test(person.indirizzo)) {
+      issues.push('Località senza civico');
+    }
+
+    if (state.meta.hasUppercaseCity && person.cittaRaw && /[a-zà-ÿ]/.test(person.cittaRaw) && person.cittaRaw === person.cittaRaw.toLowerCase()) {
+      issues.push('Città scritta in minuscolo');
+    }
+
+    const geo = getGeoEntry(person);
+    if (geo && geo.notFound) issues.push('Geocoding senza risultati');
+
+    person.indirizzoProblemi = issues;
+    person.indirizzoIncerto = issues.length > 0;
+    person.geo = geoCoord(person);
+  }
+
+  /* Conteggio persone per indirizzo: serve al raggruppamento visivo e al badge. */
+  const addressCounts = new Map();
+  for (const person of state.personList) {
+    if (!person.indirizzo) continue;
+    const key = personAddressKey(person);
+    addressCounts.set(key, (addressCounts.get(key) || 0) + 1);
+  }
+  state.meta.addressCounts = addressCounts;
+}
+
+function getPerson(code) {
+  return state.people.get(code) || null;
+}
+
+function isDone(person) {
+  return !!person && (DONE_STATES.has(person.stato) || person.fuoriZona);
+}
+
+function eligiblePeople() {
+  const tomorrow = tomorrowISO();
+  return state.personList.filter(person => {
+    if (!person || isDone(person)) return false;
+    if (!ELIGIBLE_STATES.has(person.stato)) return false;
+    if (state.domani.includes(person.code)) return false;
+    if (state.oggi.includes(person.code)) return false;
+    if (person.stato === 'appuntamento' && person.giornoAppuntamento && person.giornoAppuntamento !== tomorrow) return false;
+    return true;
+  });
+}
+
+function selectedPeople() {
+  return state.domani.map(code => getPerson(code)).filter(Boolean);
+}
+
+function personAddressKey(person) {
+  if (!person || !person.indirizzo) return 'zz|' + (person ? person.code : Math.random());
+  return [normAddress(person.indirizzo).toLowerCase(), clean(person.cap), cityKey(person.citta)].join('|');
+}
+
+function shortAddress(person) {
+  const place = [clean(person.cap), clean(person.citta)].filter(Boolean).join(' ');
+  return [clean(person.indirizzo), place].filter(Boolean).join(', ');
+}
+
+/* ==========================================================================
+   5. PERSISTENZA LOCALE (iOS file:// può bloccare localStorage)
+   ========================================================================== */
+function storageTest() {
+  try {
+    const key = '__ritiri_test__';
+    localStorage.setItem(key, '1');
+    const value = localStorage.getItem(key);
+    localStorage.removeItem(key);
+    return value === '1';
+  } catch (err) {
+    return false;
+  }
+}
+
+function loadLocalState() {
+  try {
+    state.rawCsv = localStorage.getItem(STORAGE_KEYS.csv) || '';
+    state.esiti = parseJSON(localStorage.getItem(STORAGE_KEYS.esiti), {});
+    state.geocache = parseJSON(localStorage.getItem(STORAGE_KEYS.geo), {});
+    state.osrmcache = parseJSON(localStorage.getItem(STORAGE_KEYS.osrm), {});
+    state.oggi = asStringArray(parseJSON(localStorage.getItem(STORAGE_KEYS.oggi), []));
+    state.domani = asStringArray(parseJSON(localStorage.getItem(STORAGE_KEYS.domani), []));
+    const settings = parseJSON(localStorage.getItem(STORAGE_KEYS.settings), {});
+    if (settings && typeof settings === 'object') state.settings = Object.assign({ raggruppa: true }, settings);
+  } catch (err) {
+    console.warn('Lettura localStorage non riuscita', err);
+  }
+  if (!state.esiti || typeof state.esiti !== 'object' || Array.isArray(state.esiti)) state.esiti = {};
+  if (!state.geocache || typeof state.geocache !== 'object' || Array.isArray(state.geocache)) state.geocache = {};
+  if (!state.osrmcache || typeof state.osrmcache !== 'object' || Array.isArray(state.osrmcache)) state.osrmcache = {};
+}
+
+function writeCoreStorage() {
+  localStorage.setItem(STORAGE_KEYS.csv, state.rawCsv);
+  localStorage.setItem(STORAGE_KEYS.esiti, JSON.stringify(state.esiti));
+  localStorage.setItem(STORAGE_KEYS.geo, JSON.stringify(state.geocache));
+  localStorage.setItem(STORAGE_KEYS.oggi, JSON.stringify(state.oggi));
+  localStorage.setItem(STORAGE_KEYS.domani, JSON.stringify(state.domani));
+  localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(state.settings));
+}
+
+function saveNow() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  if (!state.storageOK) return;
+  trimOsrmCache();
+  try {
+    writeCoreStorage();
+    localStorage.setItem(STORAGE_KEYS.osrm, JSON.stringify(state.osrmcache));
+  } catch (err) {
+    console.warn('localStorage pieno o non disponibile', err);
+    try {
+      state.osrmcache = {};
+      localStorage.setItem(STORAGE_KEYS.osrm, '{}');
+      writeCoreStorage();
+    } catch (err2) {
+      state.storageOK = false;
+      updatePersistBanner();
+      showToast('Persistenza locale non disponibile: usa Salva stato', 'warn');
+    }
+  }
+}
+
+function saveSoon() {
+  if (!state.storageOK) return;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { saveTimer = null; saveNow(); }, 350);
+}
+
+function trimOsrmCache() {
+  const entries = Object.entries(state.osrmcache)
+    .filter(([, value]) => value && Array.isArray(value.matrix) && Array.isArray(value.order));
+  entries.sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
+  const kept = {};
+  entries.slice(0, 4).forEach(([key, value]) => { kept[key] = value; });
+  state.osrmcache = kept;
+}
+
+function updatePersistBanner() {
+  const banner = document.getElementById('persist-banner');
+  if (!banner) return;
+  banner.classList.toggle('hidden', state.storageOK);
+  document.body.classList.toggle('storage-blocked', !state.storageOK);
+}
+
+function persistPerson(person) {
+  if (!person) return;
+  state.esiti[person.code] = {
+    stato: person.stato,
+    giornoAppuntamento: person.giornoAppuntamento || '',
+    dataUltimoContatto: person.dataUltimoContatto || '',
+    noteOperatore: person.noteOperatore || '',
+    fuoriZona: !!person.fuoriZona,
+    indirizzo: person.indirizzo,
+    indirizzoRaw: person.indirizzoRaw,
+    citta: person.citta,
+    cittaRaw: person.cittaRaw,
+    cap: person.cap,
+    indirizzoOriginale: person.indirizzoOriginale,
+    cittaOriginale: person.cittaOriginale,
+    capOriginale: person.capOriginale,
+    modificato: !!person.modificato,
+    indirizzoPrecedente: person.indirizzoPrecedente || '',
+    dataModificaIndirizzo: person.dataModificaIndirizzo || '',
+    motivoModifica: person.motivoModifica || '',
+    log: Array.isArray(person.log) ? person.log : []
+  };
+}
+
+/* ==========================================================================
+   6. PIANI GIORNALIERI
+   ========================================================================== */
+function syncPlans() {
+  const seenDomani = new Set();
+  state.domani = state.domani.filter(code => {
+    const person = getPerson(code);
+    if (!person || seenDomani.has(code) || isDone(person) || state.oggi.includes(code)) return false;
+    seenDomani.add(code);
+    return true;
+  }).slice(0, TARGET);
+
+  const seenOggi = new Set();
+  state.oggi = state.oggi.filter(code => {
+    const person = getPerson(code);
+    if (!person || seenOggi.has(code)) return false;
+    seenOggi.add(code);
+    return true;
+  });
+
+  const tomorrow = tomorrowISO();
+  for (const person of state.personList) {
+    if (state.domani.length >= TARGET) break;
+    if (person.stato === 'appuntamento' && person.giornoAppuntamento === tomorrow && !isDone(person)
+      && !state.oggi.includes(person.code) && !state.domani.includes(person.code)) {
+      state.domani.push(person.code);
+    }
+  }
+}
+
+function addToDomani(code, options) {
+  const opts = options || {};
+  const person = getPerson(code);
+  if (!person || isDone(person)) return false;
+  if (state.oggi.includes(code)) {
+    if (!opts.silent) showToast('La persona è già nella giornata di Oggi.', 'warn');
+    return false;
+  }
+  if (state.domani.includes(code)) return true;
+  if (state.domani.length >= TARGET) {
+    if (!opts.silent) showToast('Hai già selezionato 7 persone per domani.', 'warn');
+    return false;
+  }
+  state.domani.push(code);
+  if (!opts.silent) {
+    saveSoon();
+    render();
+    showToast('Aggiunto a domani (' + state.domani.length + '/7).', 'ok');
+  }
+  return true;
+}
+
+function removeFromDomani(code, options) {
+  const opts = options || {};
+  const index = state.domani.indexOf(code);
+  if (index < 0) return;
+  state.domani.splice(index, 1);
+  state.ui.sessionHandled.delete(code);
+  const person = getPerson(code);
+  if (opts.reset !== false && person && person.stato === 'appuntamento') {
+    person.stato = 'da_contattare';
+    person.giornoAppuntamento = '';
+    person.dataUltimoContatto = nowISO();
+    persistPerson(person);
+  }
+  if (!opts.silent) {
+    saveSoon();
+    computeFlags();
+    render();
+    scheduleOsrm();
+    showToast('Persona rimossa da domani.', 'ok');
+  }
+}
+
+function setAppointmentDate(code, date) {
+  const person = getPerson(code);
+  if (!person) return;
+  person.stato = 'appuntamento';
+  person.giornoAppuntamento = date || '';
+  person.dataUltimoContatto = nowISO();
+  if (date === tomorrowISO()) addToDomani(code, { silent: true });
+  else if (state.domani.includes(code)) removeFromDomani(code, { silent: true, reset: false });
+  persistPerson(person);
+  markTouched(code);
+  saveSoon();
+  computeFlags();
+  render();
+  scheduleOsrm();
+  showToast(date ? 'Appuntamento: ' + formatShortDate(date) : 'Data appuntamento rimossa.', 'ok');
+}
+
+function markTouched(code) {
+  state.ui.lastTouched = code || null;
+  if (!code) return;
+  setTimeout(() => {
+    if (state.ui.lastTouched === code) state.ui.lastTouched = null;
+  }, 900);
+}
+
+function applyEsito(code, stato, options) {
+  const opts = options || {};
+  const person = getPerson(code);
+  if (!person || !STATES[stato]) return;
+
+  person.stato = stato;
+  person.dataUltimoContatto = nowISO();
+
+  if (stato === 'fuori_zona' || stato === 'cambio_fuori') person.fuoriZona = true;
+  else person.fuoriZona = false;
+  if (stato === 'da_contattare') person.giornoAppuntamento = '';
+  if (stato === 'appuntamento') {
+    if (opts.tomorrow) person.giornoAppuntamento = tomorrowISO();
+    if (person.giornoAppuntamento === tomorrowISO() && !state.oggi.includes(code)) {
+      addToDomani(code, { silent: true });
+    }
+  } else if (stato === 'non_risponde' || stato === 'da_richiamare' || stato === 'da_contattare' || DONE_STATES.has(stato)) {
+    if (state.domani.includes(code)) removeFromDomani(code, { silent: true, reset: false });
+  }
+
+  if (stato === 'appuntamento' && state.domani.includes(code) && person.giornoAppuntamento !== tomorrowISO()) {
+    removeFromDomani(code, { silent: true, reset: false });
+  }
+  if (stato !== 'appuntamento') person.giornoAppuntamento = '';
+
+  persistPerson(person);
+  state.ui.sessionHandled.add(code);
+  markTouched(code);
+  saveSoon();
+  computeFlags();
+  render();
+  scheduleOsrm();
+  showToast(person.nome + ': ' + STATES[stato].label, stato === 'fuori_zona' || stato === 'cambio_fuori' ? 'warn' : 'ok');
+}
+
+function confirmGiornata() {
+  const selected = state.domani.map(code => getPerson(code)).filter(person => person && !isDone(person));
+  if (!selected.length) {
+    showToast('Non ci sono persone da confermare.', 'warn');
+    return;
+  }
+  const ordered = routeOrder(selected);
+  for (const person of ordered) {
+    if (!state.oggi.includes(person.code)) state.oggi.push(person.code);
+    person.stato = 'appuntamento';
+    person.giornoAppuntamento = todayISO();
+    person.dataUltimoContatto = nowISO();
+    persistPerson(person);
+  }
+  state.domani = [];
+  state.ui.sessionHandled.clear();
+  markTouched(ordered[0] ? ordered[0].code : null);
+  state.ui.view = 'oggi';
+  state.ui.resetScroll = true;
+  saveNow();
+  computeFlags();
+  render();
+  showToast(ordered.length + ' persone spostate in Oggi.', 'ok');
+  haptic();
+}
+
+/* ==========================================================================
+   7. GEOCoding / OSRM / FALLBACK CAP
+   ========================================================================== */
+function addrHash(person) {
+  return hashString([normAddress(person.indirizzo), clean(person.cap), titleCaseCity(person.citta)].join('|'));
+}
+
+function geoKey(person) {
+  return person.code + '|' + addrHash(person);
+}
+
+function getGeoEntry(person) {
+  return state.geocache[geoKey(person)] || null;
+}
+
+function geoCoord(person) {
+  const geo = getGeoEntry(person);
+  if (geo && typeof geo.lat === 'number' && typeof geo.lon === 'number' && isFinite(geo.lat) && isFinite(geo.lon)) {
+    return { lat: geo.lat, lon: geo.lon };
+  }
+  return null;
+}
+
+function nominatimQuery(person) {
+  return [clean(person.indirizzo), clean(person.cap), clean(person.citta), 'Italia'].filter(Boolean).join(', ');
+}
+
+async function fetchJSON(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs || 15000);
+  try {
+    const response = await fetch(url, Object.assign({ mode: 'cors', credentials: 'omit', signal: controller.signal }, options || {}));
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/*
+ * Geocodifica in background, una richiesta per indirizzo unico (non per persona:
+ * due pazienti allo stesso indirizzo condividono la risposta).
+ * Cache per persona: codice paziente + hash dell'indirizzo; se l'indirizzo cambia
+ * la chiave cambia e la vecchia entry viene rimossa dal form di modifica.
+ * Throttling 1 req/sec per rispettare le policy di Nominatim.
+ * I browser non consentono di impostare User-Agent: inviamo Accept-Language e
+ * non effettuiamo più di una richiesta al secondo.
+ */
+async function startGeocoding() {
+  if (!navigator.onLine) {
+    state.geo.offline = true;
+    updateGeoNote();
+    return;
+  }
+  if (state.geo.running) {
+    state.geo.rerun = true;
+    return;
+  }
+
+  state.geo.running = true;
+  state.geo.offline = false;
+  state.geo.failed = false;
+  state.geo.rerun = false;
+  const generation = ++state.geo.gen;
+
+  try {
+    const groups = new Map();
+    for (const person of state.personList) {
+      if (state.geocache[geoKey(person)]) continue;
+      const key = addrHash(person);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(person);
+    }
+
+    state.geo.total = groups.size;
+    state.geo.done = 0;
+    updateGeoNote();
+
+    let first = true;
+    for (const group of groups.values()) {
+      if (generation !== state.geo.gen) break;
+      if (!navigator.onLine) { state.geo.offline = true; break; }
+      if (!first) await sleep(NOMINATIM_DELAY_MS);
+      first = false;
+      if (generation !== state.geo.gen) break;
+
+      const sample = group[0];
+      let entry = null;
+      try {
+        const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(nominatimQuery(sample));
+        const data = await fetchJSON(url, {
+          headers: { 'Accept': 'application/json', 'Accept-Language': 'it' }
+        }, 15000);
+        if (generation !== state.geo.gen) break;
+        if (Array.isArray(data) && data.length) {
+          const lat = parseFloat(data[0].lat);
+          const lon = parseFloat(data[0].lon);
+          if (isFinite(lat) && isFinite(lon)) entry = { lat, lon, source: 'nominatim', ts: Date.now() };
+        }
+        if (!entry) entry = { notFound: true, source: 'nominatim', ts: Date.now() };
+      } catch (err) {
+        console.warn('Nominatim non disponibile:', err);
+        state.geo.failed = true;
+        break;
+      }
+
+      if (generation !== state.geo.gen) break;
+      for (const person of group) state.geocache[geoKey(person)] = entry;
+      state.geo.done++;
+      updateGeoNote();
+      saveSoon();
+    }
+  } finally {
+    state.geo.running = false;
+    computeFlags();
+    updateGeoNote();
+    saveSoon();
+    if (!isTyping() && !state.ui.modal) render();
+    const rerun = state.geo.rerun;
+    state.geo.rerun = false;
+    if (rerun) setTimeout(() => { startGeocoding(); }, 300);
+    else scheduleOsrm();
+  }
+}
+
+function osrmCacheKey(codes) {
+  return hashString(codes.slice().sort().join('|'));
+}
+
+function getCachedOsrm(codes) {
+  const entry = state.osrmcache[osrmCacheKey(codes)];
+  if (!entry || !Array.isArray(entry.order) || !Array.isArray(entry.matrix)) return null;
+  const position = new Map(entry.order.map((code, index) => [code, index]));
+  if (!codes.every(code => position.has(code))) return null;
+  return codes.map(from => codes.map(to => {
+    const row = entry.matrix[position.get(from)];
+    const value = row ? row[position.get(to)] : null;
+    return typeof value === 'number' && isFinite(value) ? value : null;
+  }));
+}
+
+function resetOsrmRuntime() {
+  state.osrm = { building: false, codes: [], matrix: null, key: '', failedKey: '', failed: false };
+}
+
+function clearOsrmCache() {
+  osrmEpoch++;
+  state.osrmcache = {};
+  resetOsrmRuntime();
+}
+
+function roadKm(a, b) {
+  if (!a || !b || !state.osrm.matrix) return null;
+  const i = state.osrm.codes.indexOf(a.code);
+  const j = state.osrm.codes.indexOf(b.code);
+  if (i < 0 || j < 0) return null;
+  const row = state.osrm.matrix[i];
+  const value = row ? row[j] : null;
+  return typeof value === 'number' && isFinite(value) && value >= 0 ? value / 1000 : null;
+}
+
+function capProximity(a, b) {
+  if (a.cap && b.cap && a.cap === b.cap) return 0;
+  const capA = parseInt(a.cap, 10);
+  const capB = parseInt(b.cap, 10);
+  if (isValidCap(a.cap) && isValidCap(b.cap) && isFinite(capA) && isFinite(capB) && Math.abs(capA - capB) <= 30) return 3;
+  if (cityKey(a.citta) && cityKey(a.citta) === cityKey(b.citta)) return 7;
+  if (a.cap && b.cap) return 100;
+  return 120;
+}
+
+/*
+ * Distanza per l'ordinamento: OSRM (strade) quando la matrice è disponibile;
+ * se manca la matrice si usa il fallback CAP/città, come richiesto. Per le
+ * coppie assenti dalla matrice si usa la linea d'aria, ma solo come riempimento.
+ */
+function proximityKm(a, b) {
+  if (!a || !b) return 120;
+  if (a.code === b.code) return 0;
+  const ga = geoCoord(a);
+  const gb = geoCoord(b);
+  if (ga && gb && state.osrm.matrix) {
+    const road = roadKm(a, b);
+    if (road !== null) return road;
+    return haversineKm(ga, gb);
+  }
+  return capProximity(a, b);
+}
+
+function distanceForQueue(person, group, centroid) {
+  const geo = geoCoord(person);
+  if (geo && centroid) return haversineKm(geo, centroid);
+  if (!group || !group.length) return 0;
+  return group.reduce((sum, other) => sum + capProximity(person, other), 0) / group.length;
+}
+
+/*
+ * Clustering greedy: si prende un nodo come seme e si aggregano tutti i nodi
+ * entro R km (15 km); in assenza di coordinate la "distanza" è il punteggio
+ * CAP/città (stesso CAP 0, CAP vicino 3, stessa città 7, altrimenti 100).
+ * Si ripete sui nodi restanti.
+ */
+function clusterCandidates(candidates) {
+  const remaining = candidates.slice().sort((a, b) => {
+    const ga = geoCoord(a) ? 0 : 1;
+    const gb = geoCoord(b) ? 0 : 1;
+    if (ga !== gb) return ga - gb;
+    const capCompare = clean(a.cap).localeCompare(clean(b.cap));
+    if (capCompare) return capCompare;
+    return a.nome.localeCompare(b.nome, 'it');
+  });
+  const clusters = [];
+  while (remaining.length) {
+    const seed = remaining.shift();
+    const cluster = [seed];
+    for (let i = 0; i < remaining.length;) {
+      if (proximityKm(seed, remaining[i]) <= GEO_RADIUS_KM) {
+        cluster.push(remaining.splice(i, 1)[0]);
+      } else {
+        i++;
+      }
+    }
+    clusters.push(cluster);
+  }
+  return clusters;
+}
+
+/* Preferisce il cluster capiente (8-15) per non esaurire quelli piccoli. */
+function pickCluster(clusters) {
+  if (!clusters.length) return [];
+  const sorted = clusters.slice().sort((a, b) => b.length - a.length);
+  return sorted.find(cluster => cluster.length > TARGET && cluster.length <= 15)
+    || sorted.find(cluster => cluster.length > TARGET)
+    || sorted[0];
+}
+
+function queueRank(person) {
+  if (state.ui.sessionHandled.has(person.code)) return 3;
+  if (person.stato === 'non_risponde') return 2;
+  if (person.stato === 'da_richiamare') return 1;
+  return 0;
+}
+
+function computeQueue() {
+  const candidates = eligiblePeople();
+  if (!candidates.length) return [];
+
+  const selected = selectedPeople();
+  const clusters = clusterCandidates(candidates);
+  const chosen = pickCluster(clusters);
+  const chosenCodes = new Set(chosen.map(person => person.code));
+  const rest = candidates.filter(person => !chosenCodes.has(person.code));
+  const centroid = state.osrm.matrix ? centroidOfPeople(selected) : null;
+  const referenceGroup = selected.length ? selected : chosen;
+  const referenceCentroid = state.osrm.matrix
+    ? (centroid || (selected.length ? null : centroidOfPeople(chosen)))
+    : null;
+
+  const compare = (a, b) => {
+    const rankA = queueRank(a);
+    const rankB = queueRank(b);
+    if (rankA !== rankB) return rankA - rankB;
+    const distA = distanceForQueue(a, referenceGroup, referenceCentroid);
+    const distB = distanceForQueue(b, referenceGroup, referenceCentroid);
+    if (Math.abs(distA - distB) > 0.01) return distA - distB;
+    const capCompare = clean(a.cap).localeCompare(clean(b.cap));
+    if (capCompare) return capCompare;
+    return a.nome.localeCompare(b.nome, 'it');
+  };
+
+  return chosen.slice().sort(compare).concat(rest.slice().sort(compare));
+}
+
+/* Giro più breve possibile con euristica nearest-neighbour (n piccolo, 7). */
+function routeOrder(people) {
+  if (people.length < 3) return people.slice();
+  let best = people.slice();
+  let bestCost = Infinity;
+  for (let start = 0; start < people.length; start++) {
+    const used = new Array(people.length).fill(false);
+    used[start] = true;
+    const order = [people[start]];
+    let current = people[start];
+    let cost = 0;
+    for (let step = 1; step < people.length; step++) {
+      let bestIndex = -1;
+      let bestDistance = Infinity;
+      for (let i = 0; i < people.length; i++) {
+        if (used[i]) continue;
+        const distance = proximityKm(current, people[i]);
+        if (distance < bestDistance) { bestDistance = distance; bestIndex = i; }
+      }
+      if (bestIndex < 0) break;
+      used[bestIndex] = true;
+      cost += bestDistance;
+      order.push(people[bestIndex]);
+      current = people[bestIndex];
+    }
+    if (cost < bestCost) { bestCost = cost; best = order; }
+  }
+  return best;
+}
+
+async function fetchOsrmMatrix(nodes) {
+  const total = nodes.length;
+  const matrix = Array.from({ length: total }, () => Array(total).fill(null));
+  const chunks = [];
+  for (let i = 0; i < total; i += OSRM_CHUNK_SIZE) {
+    const chunk = [];
+    for (let j = i; j < Math.min(total, i + OSRM_CHUNK_SIZE); j++) chunk.push(j);
+    chunks.push(chunk);
+  }
+
+  let requests = 0;
+  for (let a = 0; a < chunks.length; a++) {
+    for (let b = a; b < chunks.length; b++) {
+      const first = chunks[a];
+      const second = chunks[b];
+      const indexes = a === b ? first : first.concat(second);
+      if (indexes.length > 25) throw new Error('Blocco OSRM troppo grande');
+      if (requests > 0) await sleep(OSRM_DELAY_MS);
+      requests++;
+
+      const coords = indexes.map(index => `${nodes[index].lon.toFixed(6)},${nodes[index].lat.toFixed(6)}`).join(';');
+      const url = 'https://router.project-osrm.org/table/v1/driving/' + coords + '?annotations=distance';
+      const data = await fetchJSON(url, { headers: { 'Accept': 'application/json' } }, 20000);
+      if (!data || !Array.isArray(data.distances)) throw new Error('Risposta OSRM non valida');
+      const distances = data.distances;
+
+      for (let i = 0; i < first.length; i++) {
+        for (let j = 0; j < second.length; j++) {
+          if (a === b) {
+            const value = distances[i] ? distances[i][j] : null;
+            matrix[first[i]][first[j]] = typeof value === 'number' && isFinite(value) ? value : null;
+          } else {
+            const forward = distances[i] ? distances[i][first.length + j] : null;
+            const backward = distances[first.length + j] ? distances[first.length + j][i] : null;
+            matrix[first[i]][second[j]] = typeof forward === 'number' && isFinite(forward) ? forward : null;
+            matrix[second[j]][first[i]] = typeof backward === 'number' && isFinite(backward) ? backward : null;
+          }
+        }
+      }
+    }
+  }
+  return matrix;
+}
+
+async function ensureOsrm() {
+  if (state.ui.view !== 'domani' || state.geo.running) return;
+  if (!navigator.onLine) { state.osrm.failed = true; updateGeoNote(); return; }
+  if (state.osrm.building) return;
+
+  let pool = [];
+  const seen = new Set();
+  for (const person of selectedPeople().concat(eligiblePeople())) {
+    if (!seen.has(person.code) && geoCoord(person)) {
+      seen.add(person.code);
+      pool.push(person);
+    }
+  }
+  if (pool.length > OSRM_MAX_NODES) {
+    const selected = selectedPeople().filter(person => geoCoord(person));
+    const selectedCodes = new Set(selected.map(person => person.code));
+    const rest = pool.filter(person => !selectedCodes.has(person.code));
+    pool = selected.concat(rest.slice(0, Math.max(0, OSRM_MAX_NODES - selected.length)));
+  }
+
+  const codes = pool.map(person => person.code);
+  if (codes.length < 2) {
+    resetOsrmRuntime();
+    updateGeoNote();
+    return;
+  }
+
+  const key = osrmCacheKey(codes);
+  if (state.osrm.matrix && state.osrm.key === key) return;
+  if (state.osrm.failedKey === key) return;
+
+  const cached = getCachedOsrm(codes);
+  if (cached) {
+    state.osrm = { building: false, codes, matrix: cached, key, failedKey: '', failed: false };
+    updateGeoNote();
+    if (!isTyping() && !state.ui.modal) render();
+    return;
+  }
+
+  state.osrm.building = true;
+  state.osrm.failed = false;
+  updateGeoNote();
+  const epoch = osrmEpoch;
+  const nodes = pool.map(person => {
+    const coord = geoCoord(person);
+    return { code: person.code, lat: coord.lat, lon: coord.lon };
+  });
+
+  try {
+    const matrix = await fetchOsrmMatrix(nodes);
+    if (epoch !== osrmEpoch) return;
+    state.osrmcache[key] = { order: codes, matrix, ts: Date.now() };
+    trimOsrmCache();
+    state.osrm = { building: false, codes, matrix, key, failedKey: '', failed: false };
+    saveSoon();
+    updateGeoNote();
+    if (!isTyping() && !state.ui.modal) render();
+  } catch (err) {
+    if (epoch !== osrmEpoch) return;
+    console.warn('OSRM non disponibile:', err);
+    state.osrm = { building: false, codes: [], matrix: null, key: '', failedKey: key, failed: true };
+    updateGeoNote();
+  }
+}
+
+function scheduleOsrm() {
+  if (state.ui.view !== 'domani' || state.geo.running) return;
+  if (osrmTimer) clearTimeout(osrmTimer);
+  osrmTimer = setTimeout(() => {
+    osrmTimer = null;
+    ensureOsrm();
+  }, 900);
+}
+
+function geoNoteHtml() {
+  if (state.geo.running) {
+    return '<span class="spinner" aria-hidden="true"></span><span>Geocodifica indirizzi ' + state.geo.done + '/' + (state.geo.total || '…') + '…</span>';
+  }
+  if (state.osrm.building) return '<span class="spinner" aria-hidden="true"></span><span>Calcolo distanze stradali…</span>';
+  if (state.osrm.matrix) return ICON.route + '<span>Distanze stradali attive.</span>';
+  if (!navigator.onLine) return ICON.wifiOff + '<span>Offline: ordinamento per CAP – rete non disponibile.</span>';
+  return ICON.warn + '<span>Ordinamento per CAP – rete non disponibile.</span>';
+}
+
+function updateGeoNote() {
+  const html = geoNoteHtml();
+  document.querySelectorAll('[data-geo-note]').forEach(el => { el.innerHTML = html; });
+}
+
+function startGeocodingIfPossible() {
+  setTimeout(() => { startGeocoding(); }, 400);
+}
+
+/* ==========================================================================
+   8. ICONE SVG
+   ========================================================================== */
+const ICON = {
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 10c0 5.4-8 12-8 12S4 15.4 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.2-1.2a2 2 0 0 1 2.1-.5c.9.3 1.9.6 2.9.7a2 2 0 0 1 1.7 2Z"/></svg>',
+  pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg>',
+  route: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M6 17V9a4 4 0 0 1 4-4h4M18 7v8a4 4 0 0 1-4 4h-4"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/></svg>',
+  save: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>',
+  load: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 11v6M9 14l3-3 3 3"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6"/></svg>',
+  wifiOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"/><path d="M8.5 8.5a6 6 0 0 1 7 0M5 5a11 11 0 0 1 14 0M10 12a3 3 0 0 1 4 0"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/></svg>'
+};
+
+/* ==========================================================================
+   9. RENDER — HEADER / NAV
+   ========================================================================== */
+function updateHeader() {
+  const dateEl = document.getElementById('header-date');
+  if (dateEl) dateEl.textContent = capitalize(formatLongDate(todayISO())) + ' · demo';
+  const plannedToday = state.oggi.length;
+  const oggiEl = document.getElementById('stat-oggi');
+  const domaniEl = document.getElementById('stat-domani');
+  if (oggiEl) {
+    oggiEl.textContent = 'Oggi: ' + plannedToday + '/' + TARGET;
+    oggiEl.title = 'Persone pianificate per oggi';
+  }
+  if (domaniEl) {
+    domaniEl.textContent = 'Domani: ' + state.domani.length + '/' + TARGET;
+    domaniEl.title = 'Selezionati per domani';
+  }
+}
+
+function updateNav() {
+  document.querySelectorAll('.nav-btn[data-nav]').forEach(button => {
+    if (button.dataset.nav === state.ui.view) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+}
+
+function render() {
+  const previousScroll = window.scrollY || window.pageYOffset || 0;
+  const targetScroll = state.ui.resetScroll ? 0 : previousScroll;
+  state.ui.resetScroll = false;
+  updateHeader();
+  updateNav();
+  const app = document.getElementById('app');
+  if (!app) return;
+  if (state.ui.view === 'domani') app.innerHTML = viewDomani();
+  else if (state.ui.view === 'totale') app.innerHTML = viewTotale();
+  else if (state.ui.view === 'impostazioni') app.innerHTML = viewImpostazioni();
+  else app.innerHTML = viewOggi();
+  updatePersistBanner();
+  updateGeoNote();
+  requestAnimationFrame(() => {
+    if (Math.abs((window.scrollY || 0) - targetScroll) > 2) window.scrollTo(0, targetScroll);
+  });
+  if (state.ui.view === 'domani') scheduleOsrm();
+}
+
+/* ==========================================================================
+   10. COMPONENTI DI CARD
+   ========================================================================== */
+function statusLabel(person) {
+  return (STATES[person.stato] || STATES.da_contattare).label;
+}
+
+function statusTone(person) {
+  return (STATES[person.stato] || STATES.da_contattare).tone;
+}
+
+function badgesHtml(person) {
+  const badges = [];
+  if (person.telMancante) {
+    badges.push('<span class="badge badge-danger">Tel. mancante</span>');
+  } else if (person.telSospetto) {
+    badges.push('<span class="badge badge-warn" title="' + esc(person.telefono) + '">Telefono sospetto</span>');
+  }
+  if (person.capSospetto) badges.push('<span class="badge badge-warn">CAP sospetto</span>');
+  if (person.indirizzoIncerto) {
+    badges.push('<span class="badge badge-warn" title="' + esc(person.indirizzoProblemi.join(' · ')) + '">Indirizzo incerto</span>');
+  }
+  if (person.stato === 'non_risponde') badges.push('<span class="badge badge-recall">Da ricontattare</span>');
+  if (person.fuoriZona) badges.push('<span class="badge badge-danger">Fuori zona</span>');
+  if (person.modificato) {
+    badges.push('<button type="button" class="badge badge-edit" data-action="toggle-original" data-code="' + esc(person.code) + '">modificato</button>');
+  }
+  const addressSiblings = person.indirizzo && state.meta.addressCounts ? (state.meta.addressCounts.get(personAddressKey(person)) || 1) : 1;
+  if (addressSiblings > 1) badges.push('<span class="badge badge-blue">Stesso indirizzo · ' + addressSiblings + '</span>');
+  if (state.domani.includes(person.code)) badges.push('<span class="badge badge-blue">Per domani</span>');
+  if (state.oggi.includes(person.code)) badges.push('<span class="badge badge-green">Oggi</span>');
+  return badges.length ? '<div class="badges">' + badges.join('') + '</div>' : '';
+}
+
+function originalInfoHtml(person) {
+  const reason = person.motivoModifica ? ' · ' + esc(person.motivoModifica) : '';
+  return '<div class="original-note"><strong>Indirizzo originale:</strong> ' + esc(person.indirizzoOriginale || '—')
+    + ', ' + esc(person.capOriginale || '—') + ' ' + esc(person.cittaOriginale || '')
+    + '<br><span>Modificato il ' + esc(formatDateTime(person.dataModificaIndirizzo)) + reason + '</span></div>';
+}
+
+function phoneBlockHtml(person) {
+  const parts = [];
+  if (person.telefono) {
+    parts.push('<a class="btn btn-call" href="tel:' + esc(person.telefono) + '" data-haptic="1">' + ICON.phone + '<span>Chiama ' + esc(formatPhone(person.telefono)) + '</span></a>');
+  } else if (!person.secondari.length) {
+    return '';
+  }
+  person.secondari.forEach(number => {
+    parts.push('<a class="phone-link secondary" href="tel:' + esc(number) + '" data-haptic="1">' + ICON.phone + '<span>Altro numero: ' + esc(formatPhone(number)) + '</span></a>');
+  });
+  return '<div class="call-block">' + parts.join('') + '</div>';
+}
+
+function devicesHtml(person) {
+  const items = person.dispositivi.map(device => {
+    const title = device.descrizioneModello || device.descrizionePdC || device.modello || device.asset || 'Dispositivo';
+    const meta = [
+      device.asset ? 'Asset ' + device.asset : '',
+      device.workOrder ? 'WO ' + device.workOrder : '',
+      device.codicePdC ? 'PdC ' + device.codicePdC : '',
+      device.idAttivita ? 'Att. ' + device.idAttivita : ''
+    ].filter(Boolean).map(value => esc(value)).join(' · ');
+    return '<div class="device"><span class="device-name">' + esc(title) + '</span>'
+      + (meta ? '<span class="device-meta">' + meta + '</span>' : '') + '</div>';
+  }).join('');
+  return '<div class="devices"><div class="devices-title">Dispositivi <span>· ' + person.dispositivi.length + '</span></div>' + items + '</div>';
+}
+
+function appointmentDateHtml(person) {
+  if (person.stato !== 'appuntamento') return '';
+  return '<div class="inline-date"><label for="appt-' + esc(person.code) + '">Data appuntamento</label>'
+    + '<input type="date" id="appt-' + esc(person.code) + '" data-appt-date="' + esc(person.code) + '" value="' + esc(person.giornoAppuntamento || '') + '"></div>';
+}
+
+function noteHtml(person) {
+  const csvNote = person.noteIntervento
+    ? '<details class="csv-note"><summary>Note dal CSV</summary><div class="csv-notes">' + esc(person.noteIntervento) + '</div></details>'
+    : '';
+  return '<label class="note-block"><span class="note-label">Note operative <i class="note-status" data-note-status="' + esc(person.code) + '" aria-hidden="true"></i></span>'
+    + '<textarea class="note-input" data-note="' + esc(person.code) + '" rows="2" placeholder="Appunti dalla chiamata…">' + esc(person.noteOperatore) + '</textarea></label>'
+    + csvNote;
+}
+
+const QUICK_OUTCOMES = {
+  domani: ['appuntamento', 'non_risponde', 'fuori_zona', 'gia_riconsegnato'],
+  oggi: ['ritirato', 'gia_riconsegnato', 'non_risponde', 'fuori_zona'],
+  totale: ['ritirato', 'non_risponde', 'appuntamento', 'fuori_zona']
+};
+
+function outcomeButton(person, stato, extraClass) {
+  const label = stato === 'da_contattare' ? 'Azzera esito' : STATES[stato].label;
+  return '<button type="button" class="outcome-btn esito-' + stato + (extraClass ? ' ' + extraClass : '') + '" data-action="esito" data-esito="' + stato + '" data-code="' + esc(person.code) + '" aria-label="' + esc(label + ' per ' + person.nome) + '">' + esc(label) + '</button>';
+}
+
+function outcomesHtml(person, context) {
+  const quick = (QUICK_OUTCOMES[context] || QUICK_OUTCOMES.oggi).slice();
+  let html = '<div class="outcome-grid">';
+  quick.forEach(stato => { html += outcomeButton(person, stato, ''); });
+  if (context === 'domani') {
+    html += '<button type="button" class="outcome-btn esito-salta wide" data-action="salta" data-code="' + esc(person.code) + '">Salta</button>';
+  }
+  html += '</div>';
+
+  const others = STATE_ORDER.filter(stato => !quick.includes(stato) && stato !== person.stato);
+  if (!others.includes('da_contattare') && person.stato !== 'da_contattare') others.push('da_contattare');
+  if (others.length) {
+    html += '<details class="more-outcomes"><summary>Altri esiti</summary><div class="outcome-grid">';
+    others.forEach(stato => { html += outcomeButton(person, stato, ''); });
+    html += '</div></details>';
+  }
+  return html;
+}
+
+function personCard(person, options) {
+  const opts = options || {};
+  const context = opts.context || 'oggi';
+  const index = opts.index;
+  const touched = state.ui.lastTouched === person.code;
+  return '<article class="card state-' + esc(person.stato) + (state.domani.includes(person.code) ? ' is-selected' : '') + (touched ? ' just-touched' : '') + '" data-person="' + esc(person.code) + '">'
+    + '<div class="card-head">'
+    + (Number.isInteger(index) ? '<div class="card-index" aria-hidden="true">' + (index + 1) + '</div>' : '')
+    + '<div class="card-title-wrap"><h3 class="card-title">' + esc(person.nome) + '</h3>'
+    + '<div class="card-meta">Cod. paziente ' + esc(person.code) + '</div></div>'
+    + '<span class="status-pill tone-' + statusTone(person) + '">' + esc(statusLabel(person)) + '</span></div>'
+    + badgesHtml(person)
+    + (state.ui.showOriginal.has(person.code) && person.modificato ? originalInfoHtml(person) : '')
+    + '<div class="address-block">' + ICON.pin + '<div><strong>' + esc(person.indirizzo || 'Indirizzo mancante') + '</strong>'
+    + '<span>' + esc(person.cap || 'CAP ?') + ' ' + esc(person.citta || '') + '</span></div></div>'
+    + phoneBlockHtml(person)
+    + outcomesHtml(person, context)
+    + appointmentDateHtml(person)
+    + '<button type="button" class="btn-address' + (person.indirizzoIncerto ? ' needs-fix' : '') + '" data-action="edit-address" data-code="' + esc(person.code) + '">' + ICON.pencil + '<span>Modifica indirizzo</span></button>'
+    + noteHtml(person)
+    + '</article>';
+}
+
+function groupedPeopleHtml(people, renderer) {
+  const groups = [];
+  people.forEach((person, index) => {
+    const key = personAddressKey(person);
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) last.items.push({ person, index });
+    else groups.push({ key, items: [{ person, index }] });
+  });
+
+  return groups.map(group => {
+    if (group.items.length === 1) return renderer(group.items[0].person, group.items[0].index);
+    const first = group.items[0].person;
+    return '<div class="addr-group"><div class="addr-group-head">' + ICON.pin
+      + '<span class="addr-text">' + esc(shortAddress(first)) + '</span>'
+      + '<span class="count">' + group.items.length + ' persone</span></div>'
+      + group.items.map(item => renderer(item.person, item.index)).join('') + '</div>';
+  }).join('');
+}
+
+/* ==========================================================================
+   11. VISTA OGGI
+   ========================================================================== */
+function viewOggi() {
+  const people = state.oggi.map(code => getPerson(code)).filter(Boolean);
+  const done = people.filter(person => isDone(person)).length;
+  const next = people.find(person => !isDone(person));
+  const progress = Math.min(100, Math.round((done / TARGET) * 100));
+
+  let html = '<section class="section">'
+    + '<div class="view-head"><h1>Oggi</h1><span class="view-sub">' + esc(capitalize(formatLongDate(todayISO()))) + '</span></div>'
+    + '<div class="panel"><div class="summary-big">Completati ' + done + '<span>/' + TARGET + '</span></div>'
+    + '<div class="summary-next">' + (next
+      ? 'Prossima tappa: <strong>' + esc(next.nome) + '</strong><span class="nx-addr">' + esc(shortAddress(next)) + '</span>'
+      : (people.length ? 'Giornata completata. Ottimo lavoro.' : 'Nessuna persona pianificata per oggi.'))
+    + '</div><div class="progress"><i style="width:' + progress + '%"></i></div>'
+    + (people.length ? '<div class="geo-note">' + ICON.pin + '<span>Ordinamento per inserimento.</span></div>' : '')
+    + '</div>';
+
+  if (!people.length) {
+    html += '<div class="empty"><strong>Oggi è libero</strong>Vai in Domani, contatta le persone e conferma la giornata: qui troverai l\'ordine di visita.<br><br><button type="button" class="btn btn-outline" data-nav="domani">Vai a Domani</button></div>';
+  } else {
+    html += groupedPeopleHtml(people, (person, index) => personCard(person, { context: 'oggi', index }));
+  }
+
+  html += '</section>';
+  return html;
+}
+
+/* ==========================================================================
+   12. VISTA DOMANI
+   ========================================================================== */
+function candidateDistanceLabel(person, selected) {
+  if (!selected.length) return '';
+  const coord = geoCoord(person);
+  const centroid = state.osrm.matrix ? centroidOfPeople(selected) : null;
+  if (coord && centroid) return '≈ ' + Math.round(haversineKm(coord, centroid)) + ' km dal gruppo';
+  const sameCap = selected.some(other => person.cap && other.cap === person.cap);
+  const sameCity = selected.some(other => cityKey(other.citta) && cityKey(other.citta) === cityKey(person.citta));
+  if (sameCap) return 'Stesso CAP del gruppo';
+  if (sameCity) return 'Stessa città del gruppo';
+  return '';
+}
+
+function viewDomani() {
+  const selected = selectedPeople();
+  const full = selected.length === TARGET;
+  const ordered = full ? routeOrder(selected) : selected;
+  const queue = full ? [] : computeQueue();
+  const candidate = queue[0] || null;
+  const progress = Math.min(100, Math.round((selected.length / TARGET) * 100));
+
+  let html = '<section class="section">'
+    + '<div class="view-head"><h1>Domani</h1><span class="view-sub">' + esc(capitalize(formatLongDate(tomorrowISO()))) + '</span></div>'
+    + '<div class="panel"><div class="plan-counter"><div class="plan-number">' + selected.length + '<small>/' + TARGET + '</small></div>'
+    + '<div class="plan-caption"><strong>Selezionati per domani</strong>Un esito alla volta, fino a 7 persone.</div></div>'
+    + '<div class="progress"><i style="width:' + progress + '%"></i></div>'
+    + '<div class="geo-note" data-geo-note></div></div>';
+
+  if (full) {
+    html += '<div class="panel"><div class="panel-title">' + ICON.route + ' Giornata pronta</div>'
+      + '<p class="panel-sub">7 persone selezionate, ordinate per un giro di visita ragionevole.</p>'
+      + '<ol class="route-list">' + ordered.map((person, index) =>
+        '<li class="route-item"><span class="r-num">' + (index + 1) + '</span><span class="r-name">' + esc(person.nome)
+        + '<small>' + esc(shortAddress(person)) + '</small></span>'
+        + '<button type="button" class="plan-remove" data-action="remove-domani" data-code="' + esc(person.code) + '" aria-label="Rimuovi ' + esc(person.nome) + ' da domani">✕</button></li>'
+      ).join('') + '</ol>'
+      + '<button type="button" class="btn btn-confirm" data-action="confirm-day">Conferma giornata → Oggi</button>'
+      + '<p class="panel-sub" style="text-align:center;margin-top:8px">Le 7 persone verranno spostate in Oggi.</p></div>';
+  } else {
+    if (selected.length) {
+      html += '<div class="panel"><div class="panel-title">' + ICON.pin + ' In selezione</div><div class="plan-list">'
+        + selected.map((person, index) =>
+          '<div class="plan-item"><span class="plan-num">' + (index + 1) + '</span><span class="plan-item-name">' + esc(person.nome)
+          + '<small>' + esc(shortAddress(person)) + '</small></span>'
+          + '<button type="button" class="plan-remove" data-action="remove-domani" data-code="' + esc(person.code) + '" aria-label="Rimuovi ' + esc(person.nome) + ' da domani">✕</button></div>'
+        ).join('') + '</div></div>';
+    }
+
+    if (candidate) {
+      html += '<div class="candidate-label"><span>Prossimo candidato</span><span class="distance">' + esc(candidateDistanceLabel(candidate, selected)) + '</span></div>';
+      html += personCard(candidate, { context: 'domani' });
+    } else {
+      html += '<div class="empty"><strong>Nessun candidato disponibile</strong>Tutti i contatti sono già pianificati, completati o fuori zona.<br><br><button type="button" class="btn btn-outline" data-nav="totale">Apri Totale</button></div>';
+    }
+  }
+
+  html += '</section>';
+  return html;
+}
+
+/* ==========================================================================
+   13. VISTA TOTALE
+   ========================================================================== */
+function stateCounts() {
+  const counts = {
+    da_contattare: 0, appuntamento: 0, non_risponde: 0, da_richiamare: 0,
+    cambio_zona: 0, cambio_fuori: 0, fuori_zona: 0, gia_riconsegnato: 0, ritirato: 0
+  };
+  for (const person of state.personList) {
+    if (counts[person.stato] !== undefined) counts[person.stato]++;
+  }
+  return counts;
+}
+
+function filterPeople() {
+  const filter = state.ui.filter;
+  const search = normalizeSearch(filter.search);
+  let people = state.personList.slice();
+
+  if (filter.stato === 'da_contattare') {
+    people = people.filter(person => person.stato === 'da_contattare' || person.stato === 'cambio_zona');
+  } else if (filter.stato === 'fuori_zona') {
+    people = people.filter(person => person.stato === 'fuori_zona' || person.stato === 'cambio_fuori');
+  } else if (filter.stato) {
+    people = people.filter(person => person.stato === filter.stato);
+  }
+
+  if (filter.cap) people = people.filter(person => person.cap === filter.cap);
+  if (filter.citta) people = people.filter(person => cityKey(person.citta) === filter.citta);
+  if (filter.ricontattare) people = people.filter(person => person.stato === 'non_risponde' || person.stato === 'da_richiamare');
+  if (filter.telSospetto) people = people.filter(person => person.telSospetto);
+  if (filter.capSospetto) people = people.filter(person => person.capSospetto);
+  if (filter.indirizzoIncerto) people = people.filter(person => person.indirizzoIncerto);
+
+  if (search) {
+    people = people.filter(person => {
+      const haystack = normalizeSearch([
+        person.nome, person.code, person.indirizzo, person.citta, person.telefono,
+        formatPhone(person.telefono), person.telefonoRaw, person.secondari.join(' '),
+        person.secondari.map(formatPhone).join(' '), person.noteIntervento
+      ].join(' '));
+      return haystack.includes(search);
+    });
+  }
+
+  if (state.settings.raggruppa) {
+    people.sort((a, b) => {
+      const addressCompare = personAddressKey(a).localeCompare(personAddressKey(b));
+      if (addressCompare) return addressCompare;
+      return a.nome.localeCompare(b.nome, 'it');
+    });
+  } else {
+    people.sort((a, b) => a.nome.localeCompare(b.nome, 'it'));
+  }
+  return people;
+}
+
+function totalsRowHtml(person) {
+  const expanded = state.ui.expanded.has(person.code);
+  const modifiedMark = person.modificato
+    ? '<span class="mini-mark" title="Indirizzo originale: ' + esc(person.indirizzoOriginale || '—') + ' · ' + esc(formatDateTime(person.dataModificaIndirizzo) || 'data non disponibile') + '">mod.</span>'
+    : '';
+  const address = person.indirizzo
+    ? '<div class="address-block small">' + ICON.pin + '<div><strong>' + esc(person.indirizzo) + '</strong><span>' + esc(person.cap || 'CAP ?') + ' ' + esc(person.citta || '') + '</span></div></div>'
+    : '';
+  const callButton = person.telefono
+    ? '<a class="btn btn-sm btn-call-soft" href="tel:' + esc(person.telefono) + '" data-haptic="1">' + ICON.phone + ' Chiama</a>'
+    : '<span class="badge badge-danger">Tel. mancante</span>';
+
+  return '<div class="trow state-' + esc(person.stato) + (state.domani.includes(person.code) ? ' is-selected' : '') + (state.ui.lastTouched === person.code ? ' just-touched' : '') + '" data-person="' + esc(person.code) + '">'
+    + '<div class="trow-main"><button type="button" class="trow-toggle" data-action="toggle-row" data-code="' + esc(person.code) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">'
+    + '<span class="trow-name">' + esc(person.nome) + modifiedMark + '</span>'
+    + '<span class="trow-meta">' + esc(person.citta || '—') + (person.cap ? ' · ' + esc(person.cap) : '') + ' · ' + (person.telefono ? esc(formatPhone(person.telefono)) : 'senza telefono') + '</span>'
+    + '</button><span class="status-pill tone-' + statusTone(person) + '">' + esc(statusLabel(person)) + '</span></div>'
+    + '<div class="trow-actions">' + callButton
+    + '<button type="button" class="btn btn-sm btn-outline' + (person.indirizzoIncerto ? ' needs-fix' : '') + '" data-action="edit-address" data-code="' + esc(person.code) + '">' + ICON.pencil + ' Modifica indirizzo</button></div>'
+    + (expanded ? '<div class="trow-details">'
+      + badgesHtml(person)
+      + address
+      + (person.secondari.length ? '<div class="call-block">' + person.secondari.map(number => '<a class="phone-link secondary" href="tel:' + esc(number) + '">' + ICON.phone + '<span>Altro numero: ' + esc(formatPhone(number)) + '</span></a>').join('') + '</div>' : '')
+      + devicesHtml(person)
+      + outcomesHtml(person, 'totale')
+      + appointmentDateHtml(person)
+      + noteHtml(person)
+      + (state.ui.showOriginal.has(person.code) && person.modificato ? originalInfoHtml(person) : '')
+      + '</div>' : '')
+    + '</div>';
+}
+
+function totalsResultsHtml() {
+  const people = filterPeople();
+  const devices = people.reduce((sum, person) => sum + person.rows.length, 0);
+  let rows = '';
+  if (state.settings.raggruppa) {
+    const groups = [];
+    people.forEach(person => {
+      const key = personAddressKey(person);
+      const last = groups[groups.length - 1];
+      if (last && last.key === key) last.items.push(person);
+      else groups.push({ key, items: [person] });
+    });
+    rows = groups.map(group => {
+      if (group.items.length === 1) return totalsRowHtml(group.items[0]);
+      const first = group.items[0];
+      return '<div class="addr-group"><div class="addr-group-head">' + ICON.pin
+        + '<span class="addr-text">' + esc(shortAddress(first)) + '</span>'
+        + '<span class="count">' + group.items.length + ' persone</span></div>'
+        + group.items.map(totalsRowHtml).join('') + '</div>';
+    }).join('');
+  } else {
+    rows = people.map(totalsRowHtml).join('');
+  }
+  return '<div class="results-meta"><span><strong>' + people.length + '</strong> persone · ' + devices + ' dispositivi</span>'
+    + (state.settings.raggruppa ? '<span>raggruppate per indirizzo</span>' : '') + '</div>'
+    + (rows || '<div class="empty"><strong>Nessun risultato</strong>Prova a cambiare i filtri o la ricerca.</div>');
+}
+
+function filterOption(value, label, selected) {
+  return '<option value="' + esc(value) + '"' + (selected === value ? ' selected' : '') + '>' + esc(label) + '</option>';
+}
+
+function viewTotale() {
+  const counts = stateCounts();
+  const filter = state.ui.filter;
+  const caps = Array.from(new Set(state.personList.map(person => person.cap).filter(Boolean))).sort();
+  const cityMap = new Map();
+  state.personList.forEach(person => { if (person.citta) cityMap.set(cityKey(person.citta), person.citta); });
+  const cities = Array.from(cityMap.entries()).sort((a, b) => a[1].localeCompare(b[1], 'it'));
+  const filterActive = !!(filter.stato || filter.cap || filter.citta || filter.search || filter.ricontattare || filter.telSospetto || filter.capSospetto || filter.indirizzoIncerto);
+
+  let html = '<section class="section">'
+    + '<div class="view-head"><h1>Totale</h1><span class="view-sub">' + state.personList.length + ' persone</span></div>'
+    + '<div class="panel"><div class="panel-title">Riepilogo</div><div class="counter-grid">'
+    + '<button type="button" class="counter' + (filter.stato === 'da_contattare' ? ' active' : '') + '" data-action="set-filter" data-stato="da_contattare"><b>' + (counts.da_contattare + counts.cambio_zona) + '</b><span>Da contattare</span></button>'
+    + '<button type="button" class="counter' + (filter.stato === 'appuntamento' ? ' active' : '') + '" data-action="set-filter" data-stato="appuntamento"><b>' + counts.appuntamento + '</b><span>Appuntamento</span></button>'
+    + '<button type="button" class="counter' + (filter.stato === 'non_risponde' ? ' active' : '') + '" data-action="set-filter" data-stato="non_risponde"><b>' + counts.non_risponde + '</b><span>Non risponde</span></button>'
+    + '<button type="button" class="counter' + (filter.stato === 'fuori_zona' ? ' active' : '') + '" data-action="set-filter" data-stato="fuori_zona"><b>' + (counts.fuori_zona + counts.cambio_fuori) + '</b><span>Fuori zona</span></button>'
+    + '<button type="button" class="counter' + (filter.stato === 'gia_riconsegnato' ? ' active' : '') + '" data-action="set-filter" data-stato="gia_riconsegnato"><b>' + counts.gia_riconsegnato + '</b><span>Già riconsegnato</span></button>'
+    + '<button type="button" class="counter' + (filter.stato === 'ritirato' ? ' active' : '') + '" data-action="set-filter" data-stato="ritirato"><b>' + counts.ritirato + '</b><span>Ritirato</span></button>'
+    + '</div>'
+    + '<button type="button" class="recall-chip' + (filter.stato === 'da_richiamare' ? ' active' : '') + '" data-action="set-filter" data-stato="da_richiamare"><span>Da richiamare</span><strong>' + counts.da_richiamare + '</strong></button>'
+    + '</div>'
+    + '<div class="panel"><div class="panel-title">' + ICON.search + ' Cerca e filtra</div>'
+    + '<div class="search-wrap">' + ICON.search + '<input type="search" id="totale-search" data-search autocomplete="off" aria-label="Cerca persone" placeholder="Nome, indirizzo, telefono, codice…" value="' + esc(filter.search) + '"></div>'
+    + '<div class="filter-grid">'
+    + '<select data-filter="stato" aria-label="Filtra per stato">' + filterOption('', 'Stato: tutti', filter.stato)
+    + STATE_ORDER.map(stato => filterOption(stato, STATES[stato].label, filter.stato)).join('') + '</select>'
+    + '<select data-filter="cap" aria-label="Filtra per CAP">' + filterOption('', 'CAP: tutti', filter.cap)
+    + caps.map(cap => filterOption(cap, 'CAP ' + cap, filter.cap)).join('') + '</select>'
+    + '<select data-filter="citta" aria-label="Filtra per città">' + filterOption('', 'Città: tutte', filter.citta)
+    + cities.map(([key, name]) => filterOption(key, name, filter.citta)).join('') + '</select>'
+    + '</div>'
+    + '<div class="filter-checks">'
+    + '<label class="check-row"><input type="checkbox" data-filter="ricontattare"' + (filter.ricontattare ? ' checked' : '') + '> Da ricontattare</label>'
+    + '<label class="check-row"><input type="checkbox" data-filter="telSospetto"' + (filter.telSospetto ? ' checked' : '') + '> Telefono sospetto</label>'
+    + '<label class="check-row"><input type="checkbox" data-filter="capSospetto"' + (filter.capSospetto ? ' checked' : '') + '> CAP sospetto</label>'
+    + '<label class="check-row"><input type="checkbox" data-filter="indirizzoIncerto"' + (filter.indirizzoIncerto ? ' checked' : '') + '> Indirizzo incerto</label>'
+    + '<label class="check-row wide"><input type="checkbox" data-filter="raggruppa"' + (state.settings.raggruppa ? ' checked' : '') + '> Raggruppa per indirizzo</label>'
+    + '</div>'
+    + (filterActive ? '<div class="filter-actions"><button type="button" class="btn btn-outline" data-action="clear-filters">Azzera filtri</button></div>' : '')
+    + '</div>'
+    + '<div id="totale-results">' + totalsResultsHtml() + '</div>'
+    + '</section>';
+  return html;
+}
+
+function renderTotaleResultsOnly() {
+  const box = document.getElementById('totale-results');
+  if (box) box.innerHTML = totalsResultsHtml();
+}
+
+/* ==========================================================================
+   14. VISTA IMPOSTAZIONI
+   ========================================================================== */
+function viewImpostazioni() {
+  const counts = stateCounts();
+  const deviceCount = state.personList.reduce((sum, person) => sum + person.rows.length, 0);
+  const addressCount = new Set(state.personList.map(personAddressKey)).size;
+  const caps = new Set(state.personList.map(person => person.cap).filter(isValidCap));
+  const cities = new Set(state.personList.map(person => cityKey(person.citta)).filter(Boolean));
+  const geoCount = Object.keys(state.geocache).length;
+  const osrmCount = Object.keys(state.osrmcache).length;
+  const storageStatus = state.storageOK
+    ? '<span class="status-ok">Attiva (salvataggio automatico)</span>'
+    : '<span class="status-bad">Non disponibile (usa i file .json)</span>';
+  const resetArmed = Date.now() < resetArmedUntil;
+
+  return '<section class="section">'
+    + '<div class="view-head"><h1>Impostazioni</h1><span class="view-sub">Dati e backup</span></div>'
+    + '<div class="settings-section"><h2>' + ICON.upload + ' Dati</h2><div class="setting-stack">'
+    + '<button type="button" class="setting-btn primary" data-action="trigger-import">' + ICON.upload + '<span>Importa CSV<small>Sostituisce i dati, conserva gli esiti dei codici presenti</small></span></button>'
+    + '<button type="button" class="setting-btn" data-action="export-csv">' + ICON.download + '<span>Esporta CSV<small>Colonne originali + StatoCalcolato e altre colonne app</small></span></button>'
+    + '<button type="button" class="setting-btn" data-action="save-state">' + ICON.save + '<span>Salva stato (.json)<small>Backup completo: dati, esiti, cache, giornate, modifiche</small></span></button>'
+    + '<button type="button" class="setting-btn" data-action="trigger-load">' + ICON.load + '<span>Carica stato (.json)<small>Ripristina uno snapshot salvato</small></span></button>'
+    + '</div></div>'
+
+    + '<div class="settings-section"><h2>' + ICON.route + ' Stato app</h2>'
+    + '<div class="kv"><span>Persistenza</span><strong>' + storageStatus + '</strong></div>'
+    + '<div class="kv"><span>Geocoding</span><strong>' + geoCount + ' indirizzi in cache</strong></div>'
+    + '<div class="kv"><span>Matrici OSRM</span><strong>' + osrmCount + ' in cache</strong></div>'
+    + '<div class="kv"><span>Rete</span><strong>' + (navigator.onLine ? 'Online' : 'Offline') + '</strong></div>'
+    + '<div class="geo-note" data-geo-note></div>'
+    + '<div class="setting-stack" style="margin-top:10px">'
+    + '<button type="button" class="setting-btn" data-action="recalc-geo">' + ICON.refresh + '<span>Ricalcola geocoding<small>Svuota la cache e riprova gli indirizzi</small></span></button>'
+    + '</div></div>'
+
+    + '<div class="settings-section"><h2>' + ICON.pin + ' Dataset</h2>'
+    + '<div class="kv"><span>Persone</span><strong>' + state.personList.length + '</strong></div>'
+    + '<div class="kv"><span>Dispositivi / righe</span><strong>' + deviceCount + '</strong></div>'
+    + '<div class="kv"><span>Indirizzi</span><strong>' + addressCount + '</strong></div>'
+    + '<div class="kv"><span>CAP / città</span><strong>' + caps.size + ' / ' + cities.size + '</strong></div>'
+    + '<div class="kv"><span>Da contattare</span><strong>' + (counts.da_contattare + counts.cambio_zona) + '</strong></div>'
+    + '<div class="kv"><span>Appuntamenti</span><strong>' + counts.appuntamento + '</strong></div>'
+    + '<div class="kv"><span>Non risponde / richiamare</span><strong>' + counts.non_risponde + ' / ' + counts.da_richiamare + '</strong></div>'
+    + '<div class="kv"><span>Completati</span><strong>' + (counts.ritirato + counts.gia_riconsegnato) + '</strong></div>'
+    + '<div class="kv"><span>Fuori zona</span><strong>' + (counts.fuori_zona + counts.cambio_fuori) + '</strong></div>'
+    + '</div>'
+
+    + '<div class="settings-section"><h2>' + ICON.warn + ' Privacy e note</h2>'
+    + '<div class="note-box"><strong>Versione demo pubblica:</strong> il seed contiene solo dati fittizi. Il CSV reale che importi resta sul dispositivo.<br><br><strong>Nessun dato viene inviato a server esterni</strong>, eccetto gli indirizzi a Nominatim (OpenStreetMap) per la geocodifica e le coordinate a OSRM per le distanze stradali. Le richieste avvengono solo online; offline l\'app usa l\'ordinamento per CAP/città. I dati restano sul dispositivo (localStorage o file .json esportato).</div>'
+    + '<details class="help"><summary>Come funziona il salvataggio su iPhone</summary><div class="note-box">Aprendo il file da <strong>file://</strong>, Safari può bloccare localStorage. In quel caso vedi un banner giallo: usa <strong>Salva stato (.json)</strong> per conservare tutto e <strong>Carica stato (.json)</strong> per ripristinarlo. Su Android/Chrome di solito il salvataggio automatico funziona.</div></details>'
+    + '</div>'
+
+    + '<div class="settings-section"><h2>' + ICON.trash + ' Zona pericolosa</h2>'
+    + '<button type="button" class="setting-btn danger" data-action="reset-data">' + ICON.trash + '<span>' + (resetArmed ? 'Tocca di nuovo per confermare il reset' : 'Reset dati') + '<small>Ricarica il CSV di esempio e cancella esiti/cache</small></span></button>'
+    + '</div>'
+
+    + '<p class="panel-sub" style="text-align:center;margin:6px 0 0">Ritiri Demo · pianificazione offline · versione 1.0</p>'
+    + '<input type="file" id="import-csv-input" accept=".csv,text/csv,text/plain" class="hidden">'
+    + '<input type="file" id="load-state-input" accept=".json,application/json" class="hidden">'
+    + '</section>';
+}
+
+/* ==========================================================================
+   15. MODAL MODIFICA INDIRIZZO
+   ========================================================================== */
+function openAddressModal(code, options) {
+  const person = getPerson(code);
+  if (!person) return;
+  const opts = options || {};
+  lastModalFocus = document.activeElement;
+  state.ui.modal = { type: 'address', code, motivo: opts.motivo || '', transfer: opts.transfer || '' };
+  renderModal();
+}
+
+function closeModal() {
+  state.ui.modal = null;
+  const root = document.getElementById('modal-root');
+  if (root) root.innerHTML = '';
+  document.body.classList.remove('modal-open');
+  if (lastModalFocus && lastModalFocus.isConnected && typeof lastModalFocus.focus === 'function') {
+    try { lastModalFocus.focus(); } catch (err) { /* niente */ }
+  }
+  lastModalFocus = null;
+}
+
+function renderModal() {
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  if (!state.ui.modal) {
+    root.innerHTML = '';
+    document.body.classList.remove('modal-open');
+    return;
+  }
+  const modal = state.ui.modal;
+  if (modal.type !== 'address') return;
+  const person = getPerson(modal.code);
+  if (!person) { closeModal(); return; }
+
+  const issues = person.indirizzoProblemi.length
+    ? '<ul class="issue-list">' + person.indirizzoProblemi.map(issue => '<li>' + esc(issue) + '</li>').join('') + '</ul>'
+    : '';
+  const original = person.modificato
+    ? 'Valori CSV: ' + esc(person.indirizzoOriginale || '—') + ', ' + esc(person.capOriginale || '—') + ' ' + esc(person.cittaOriginale || '')
+    : 'Nessuna modifica precedente.';
+  const transferNote = modal.transfer
+    ? '<div class="transfer-note"><strong>' + (modal.transfer === 'cambio_fuori' ? 'Cambio residenza – fuori zona' : 'Cambio residenza – in zona') + '</strong><br>'
+      + (modal.transfer === 'cambio_fuori'
+        ? 'Salvando, la persona sarà marcata come fatta e non sarà più proposta.'
+        : 'Salvando, la persona resterà eleggibile per la pianificazione.') + '</div>'
+    : '';
+
+  root.innerHTML = '<div class="modal-backdrop" data-action="close-modal">'
+    + '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">'
+    + '<div class="modal-head"><div><h2 id="modal-title">Modifica indirizzo</h2><div class="modal-sub">' + esc(person.nome) + (modal.transfer ? ' · cambio residenza' : '') + '</div></div>'
+    + '<button type="button" class="modal-close" data-action="close-modal" aria-label="Chiudi">✕</button></div>'
+    + '<div class="modal-original">' + original + issues + '</div>'
+    + transferNote
+    + '<label class="field"><span>Indirizzo</span><input id="addr-ind" type="text" autocomplete="street-address" value="' + esc(person.indirizzo) + '" placeholder="Via e numero civico"></label>'
+    + '<label class="field"><span>Città</span><input id="addr-citta" type="text" autocomplete="address-level2" value="' + esc(person.citta) + '" placeholder="Città"></label>'
+    + '<label class="field"><span>CAP</span><input id="addr-cap" type="text" inputmode="numeric" maxlength="5" autocomplete="postal-code" value="' + esc(person.cap) + '" placeholder="5 cifre"></label>'
+    + '<label class="field"><span>Motivo modifica (opzionale)</span><input id="addr-motivo" type="text" list="motivi-modifica" value="' + esc(modal.motivo || person.motivoModifica || '') + '" placeholder="Es. trasferimento, corretto da chiamata">'
+    + '<datalist id="motivi-modifica"><option value="trasferimento"><option value="corretto da chiamata"><option value="incerto da geocoding"><option value="nuovo indirizzo"></datalist></label>'
+    + '<div id="addr-error" class="form-error hidden" role="alert"></div>'
+    + '<p class="field-hint">La modifica aggiorna tutte le righe della persona, invalida la geocodifica e ricalcola le distanze. Non cambia l\'esito già registrato.</p>'
+    + '<div class="modal-actions">'
+    + '<button type="button" class="btn btn-block" data-action="save-address" data-code="' + esc(person.code) + '">Salva nuovo indirizzo</button>'
+    + '<button type="button" class="btn btn-outline btn-block" data-action="cancel-address">Annulla</button>'
+    + '<button type="button" class="btn btn-ghost btn-block" data-action="restore-address" data-code="' + esc(person.code) + '"' + (person.modificato ? '' : ' disabled') + '>Ripristina originale</button>'
+    + '</div></div></div>';
+
+  document.body.classList.add('modal-open');
+  setTimeout(() => {
+    const input = document.getElementById('addr-ind');
+    if (input) {
+      input.focus();
+      const length = input.value.length;
+      try { input.setSelectionRange(length, length); } catch (err) { /* niente */ }
+    }
+  }, 60);
+}
+
+function modalError(message) {
+  const box = document.getElementById('addr-error');
+  if (!box) return;
+  box.textContent = message;
+  box.classList.remove('hidden');
+}
+
+function saveAddress() {
+  const modal = state.ui.modal;
+  if (!modal || modal.type !== 'address') return;
+  const person = getPerson(modal.code);
+  if (!person) { closeModal(); return; }
+
+  const indInput = document.getElementById('addr-ind');
+  const cityInput = document.getElementById('addr-citta');
+  const capInput = document.getElementById('addr-cap');
+  const reasonInput = document.getElementById('addr-motivo');
+  if (!indInput || !cityInput || !capInput) return;
+
+  const indirizzo = normAddress(indInput.value);
+  const cittaInputRaw = cityInput.value;
+  const citta = titleCaseCity(cittaInputRaw);
+  const cap = clean(capInput.value);
+  const motivo = reasonInput ? clean(reasonInput.value) : '';
+
+  if (!indirizzo) { modalError('Inserisci l\'indirizzo.'); indInput.focus(); return; }
+  if (!citta) { modalError('Inserisci la città.'); cityInput.focus(); return; }
+
+  const old = { indirizzo: person.indirizzo, citta: person.citta, cap: person.cap };
+  const changed = old.indirizzo !== indirizzo || old.citta !== citta || old.cap !== cap;
+  if (!changed && !motivo && !modal.transfer) {
+    closeModal();
+    showToast('Nessuna modifica all\'indirizzo.');
+    return;
+  }
+
+  const oldKey = geoKey(person);
+  const now = nowISO();
+  person.indirizzoPrecedente = old.indirizzo;
+  person.indirizzo = indirizzo;
+  person.indirizzoRaw = indInput.value.trim();
+  person.citta = citta;
+  person.cittaRaw = clean(cittaInputRaw);
+  person.cap = cap;
+  person.modificato = !(indirizzo === person.indirizzoOriginale && citta === person.cittaOriginale && cap === person.capOriginale);
+  person.dataModificaIndirizzo = person.modificato ? now : '';
+  person.motivoModifica = person.modificato ? (motivo || modal.motivo || '') : '';
+  person.log = Array.isArray(person.log) ? person.log : [];
+  person.log.push({
+    data: now,
+    tipo: 'modifica',
+    precedente: old,
+    nuovo: { indirizzo, citta, cap },
+    motivo: motivo || modal.motivo || ''
+  });
+
+  if (changed) {
+    delete state.geocache[oldKey];
+    delete state.geocache[geoKey(person)];
+    clearOsrmCache();
+    state.geo.gen++;
+    state.geo.rerun = true;
+  }
+
+  /* Cambio residenza: l'esito viene applicato solo al salvataggio del form. */
+  if (modal.transfer) {
+    person.stato = modal.transfer;
+    person.giornoAppuntamento = '';
+    person.dataUltimoContatto = now;
+    if (modal.transfer === 'cambio_fuori') {
+      person.fuoriZona = true;
+      if (state.domani.includes(person.code)) removeFromDomani(person.code, { silent: true, reset: false });
+    } else {
+      person.fuoriZona = false;
+    }
+    state.ui.sessionHandled.add(person.code);
+    markTouched(person.code);
+    person.log.push({
+      data: now,
+      tipo: 'esito',
+      stato: modal.transfer,
+      motivo: 'trasferimento'
+    });
+  }
+
+  persistPerson(person);
+  saveSoon();
+  closeModal();
+  computeFlags();
+  render();
+  if (modal.transfer === 'cambio_fuori') {
+    showToast('Cambio residenza fuori zona registrato.', 'warn');
+  } else if (modal.transfer === 'cambio_zona') {
+    showToast('Cambio residenza in zona registrato.', 'ok');
+    scheduleOsrm();
+  } else {
+    showToast('Indirizzo aggiornato.', 'ok');
+  }
+  if (changed) startGeocodingIfPossible();
+}
+
+/* Ripristino in un tap: torna ai valori del CSV importato. */
+function restoreAddress(code) {
+  const person = getPerson(code || (state.ui.modal ? state.ui.modal.code : ''));
+  if (!person) return;
+  const oldKey = geoKey(person);
+  const old = { indirizzo: person.indirizzo, citta: person.citta, cap: person.cap };
+  const now = nowISO();
+
+  person.indirizzo = person.indirizzoOriginale;
+  person.indirizzoRaw = person.indirizzoOriginale;
+  person.citta = person.cittaOriginale;
+  person.cittaRaw = person.cittaOriginale;
+  person.cap = person.capOriginale;
+  person.modificato = false;
+  person.indirizzoPrecedente = old.indirizzo;
+  person.dataModificaIndirizzo = '';
+  person.motivoModifica = '';
+  person.log = Array.isArray(person.log) ? person.log : [];
+  person.log.push({
+    data: now,
+    tipo: 'ripristino',
+    precedente: old,
+    nuovo: { indirizzo: person.indirizzoOriginale, citta: person.cittaOriginale, cap: person.capOriginale },
+    motivo: 'ripristino originale'
+  });
+
+  delete state.geocache[oldKey];
+  delete state.geocache[geoKey(person)];
+  clearOsrmCache();
+  state.geo.gen++;
+  state.geo.rerun = true;
+  persistPerson(person);
+  saveSoon();
+  closeModal();
+  computeFlags();
+  render();
+  showToast('Indirizzo originale ripristinato.', 'ok');
+  startGeocodingIfPossible();
+}
+
+/* ==========================================================================
+   16. CSV: IMPORTAZIONE / ESPORTAZIONE / SNAPSHOT
+   ========================================================================== */
+function applyCsv(raw) {
+  const parsed = parseCSV(raw);
+  const header = validateCSV(parsed);
+  const rows = rowsFromParsed(parsed, header);
+  if (!rows.length) throw new Error('Il CSV non contiene righe di dati.');
+
+  state.rawCsv = raw;
+  state.headers = header;
+  state.rows = rows;
+  buildPeople();
+
+  const validCodes = new Set(state.people.keys());
+  for (const code of Object.keys(state.esiti)) {
+    if (!validCodes.has(code)) delete state.esiti[code];
+  }
+  applyEsiti();
+  return { rows: rows.length, people: state.people.size };
+}
+
+async function handleImportFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  try {
+    const text = await readFileText(file);
+    if (!confirm('Importare "' + file.name + '"?\n\nI dati attuali verranno sostituiti. Gli esiti dei codici paziente presenti nel nuovo CSV restano.')) {
+      input.value = '';
+      return;
+    }
+    const counts = applyCsv(text);
+    clearOsrmCache();
+    state.geocache = {};
+    state.geo.gen++;
+    state.geo.failed = false;
+    state.geo.offline = false;
+    state.geo.rerun = false;
+    state.ui.sessionHandled.clear();
+    state.ui.expanded.clear();
+    state.ui.showOriginal.clear();
+    state.ui.filter = { stato: '', cap: '', citta: '', search: '', ricontattare: false, telSospetto: false, capSospetto: false, indirizzoIncerto: false };
+    syncPlans();
+    computeFlags();
+    render();
+    saveNow();
+    showToast('CSV importato: ' + counts.people + ' persone, ' + counts.rows + ' dispositivi.', 'ok');
+    startGeocodingIfPossible();
+  } catch (err) {
+    console.error(err);
+    showToast('Import non riuscito: ' + err.message, 'err');
+  } finally {
+    input.value = '';
+  }
+}
+
+function csvEscape(value) {
+  return '"' + String(value === null || value === undefined ? '' : value).replace(/"/g, '""') + '"';
+}
+
+function buildExportCsv() {
+  const extraSet = new Set(EXPORT_EXTRA_COLUMNS);
+  const baseHeaders = state.headers.filter(header => header && !extraSet.has(header));
+  const headers = baseHeaders.concat(EXPORT_EXTRA_COLUMNS);
+  const lines = [headers.map(csvEscape).join(',')];
+
+  for (const row of state.rows) {
+    const person = getPerson(patientCode(row));
+    const out = {};
+    for (const header of baseHeaders) out[header] = row[header] !== undefined ? row[header] : '';
+
+    if (person) {
+      if (person.modificato) {
+        out['Indirizzo'] = person.indirizzo;
+        out['Città'] = person.citta;
+        out['CAP'] = person.cap;
+      }
+      const saved = state.esiti[person.code];
+      if (saved && saved.dataUltimoContatto) {
+        out['Esito Intervento'] = statusLabel(person);
+      }
+      const geo = geoCoord(person);
+      out['StatoCalcolato'] = statusLabel(person);
+      out['GiornoAppuntamento'] = person.stato === 'appuntamento' ? (person.giornoAppuntamento || '') : '';
+      out['DataUltimoContatto'] = person.dataUltimoContatto || '';
+      out['Lat'] = geo ? geo.lat.toFixed(6) : '';
+      out['Lon'] = geo ? geo.lon.toFixed(6) : '';
+      out['NoteOperatore'] = person.noteOperatore || '';
+      out['TelefonoNormalizzato'] = person.telefono || '';
+      out['TelefonoSecondario'] = person.secondari.join(' / ');
+      out['FuoriZonaSiNo'] = person.fuoriZona ? 'SI' : 'NO';
+      out['IndirizzoOriginale'] = person.indirizzoOriginale || '';
+      out['CittaOriginale'] = person.cittaOriginale || '';
+      out['CAPOriginale'] = person.capOriginale || '';
+      out['DataModificaIndirizzo'] = person.dataModificaIndirizzo || '';
+      out['MotivoModificaIndirizzo'] = person.motivoModifica || '';
+    } else {
+      EXPORT_EXTRA_COLUMNS.forEach(header => { out[header] = ''; });
+    }
+    lines.push(headers.map(header => csvEscape(out[header])).join(','));
+  }
+
+  return '\uFEFF' + lines.join('\r\n') + '\r\n';
+}
+
+function exportCsv() {
+  const csv = buildExportCsv();
+  downloadBlob(csv, 'ritiri_export_' + todayISO() + '.csv', 'text/csv;charset=utf-8');
+  showToast('CSV esportato con ' + state.rows.length + ' righe.', 'ok');
+}
+
+function saveSnapshot() {
+  const modifiche = {};
+  Object.keys(state.esiti).forEach(code => {
+    const saved = state.esiti[code];
+    if (saved && Array.isArray(saved.log) && saved.log.length) modifiche[code] = saved.log;
+  });
+  const snapshot = {
+    app: 'ritiri-pianificazione',
+    version: 1,
+    savedAt: nowISO(),
+    data: state.rawCsv,
+    esiti: state.esiti,
+    geocoding_cache: state.geocache,
+    osrm_cache: state.osrmcache,
+    giornata_oggi: state.oggi,
+    giornata_domani: state.domani,
+    impostazioni: state.settings,
+    modifiche
+  };
+  downloadBlob(JSON.stringify(snapshot), 'ritiri_stato_' + todayISO() + '.json', 'application/json;charset=utf-8');
+  showToast('Stato salvato in un file .json.', 'ok');
+}
+
+async function handleLoadState(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  try {
+    const text = stripBOM(await readFileText(file));
+    const snapshot = JSON.parse(text);
+    const csv = typeof snapshot.data === 'string' ? snapshot.data : (typeof snapshot.dati_csv === 'string' ? snapshot.dati_csv : '');
+    if (!csv) throw new Error('Lo snapshot non contiene i dati CSV.');
+
+    const parsed = parseCSV(csv);
+    validateCSV(parsed);
+    if (!confirm('Caricare lo stato salvato il ' + (formatDateTime(snapshot.savedAt) || '—') + '?\n\nI dati attuali verranno sostituiti.')) {
+      input.value = '';
+      return;
+    }
+
+    state.esiti = snapshot.esiti && typeof snapshot.esiti === 'object' && !Array.isArray(snapshot.esiti) ? snapshot.esiti : {};
+    state.geocache = snapshot.geocoding_cache && typeof snapshot.geocoding_cache === 'object' && !Array.isArray(snapshot.geocoding_cache) ? snapshot.geocoding_cache : {};
+    state.osrmcache = snapshot.osrm_cache && typeof snapshot.osrm_cache === 'object' && !Array.isArray(snapshot.osrm_cache) ? snapshot.osrm_cache : {};
+    state.oggi = asStringArray(snapshot.giornata_oggi);
+    state.domani = asStringArray(snapshot.giornata_domani);
+    state.settings = Object.assign({ raggruppa: true }, snapshot.impostazioni && typeof snapshot.impostazioni === 'object' ? snapshot.impostazioni : {});
+    if (snapshot.modifiche && typeof snapshot.modifiche === 'object') {
+      Object.keys(snapshot.modifiche).forEach(code => {
+        if (state.esiti[code] && (!Array.isArray(state.esiti[code].log) || !state.esiti[code].log.length)) {
+          state.esiti[code].log = snapshot.modifiche[code];
+        }
+      });
+    }
+
+    applyCsv(csv);
+    osrmEpoch++;
+    resetOsrmRuntime();
+    state.geo.gen++;
+    state.geo.rerun = false;
+    state.geo.failed = false;
+    state.ui.sessionHandled.clear();
+    state.ui.expanded.clear();
+    state.ui.showOriginal.clear();
+    state.ui.filter = { stato: '', cap: '', citta: '', search: '', ricontattare: false, telSospetto: false, capSospetto: false, indirizzoIncerto: false };
+    syncPlans();
+    computeFlags();
+    render();
+    saveNow();
+    showToast('Stato caricato: ' + state.personList.length + ' persone.', 'ok');
+    startGeocodingIfPossible();
+  } catch (err) {
+    console.error(err);
+    showToast('Caricamento non riuscito: ' + err.message, 'err');
+  } finally {
+    input.value = '';
+  }
+}
+
+function recalcGeocoding() {
+  if (!confirm('Svuotare la cache di geocoding e ricalcolare gli indirizzi?')) return;
+  state.geocache = {};
+  clearOsrmCache();
+  state.geo.gen++;
+  state.geo.rerun = true;
+  state.geo.failed = false;
+  computeFlags();
+  render();
+  saveNow();
+  showToast('Geocoding azzerato: ricalcolo in corso…', 'ok');
+  startGeocoding();
+}
+
+function resetData() {
+  if (Date.now() > resetArmedUntil) {
+    resetArmedUntil = Date.now() + 7000;
+    render();
+    showToast('Tocca di nuovo "Reset dati" entro 7 secondi per confermare.', 'warn');
+    return;
+  }
+  resetArmedUntil = 0;
+  if (state.storageOK) {
+    Object.keys(STORAGE_KEYS).forEach(key => {
+      try { localStorage.removeItem(STORAGE_KEYS[key]); } catch (err) { /* niente */ }
+    });
+  }
+  state.esiti = {};
+  state.geocache = {};
+  state.osrmcache = {};
+  state.oggi = [];
+  state.domani = [];
+  state.settings = { raggruppa: true };
+  state.ui.sessionHandled.clear();
+  state.ui.expanded.clear();
+  state.ui.showOriginal.clear();
+  state.ui.filter = { stato: '', cap: '', citta: '', search: '', ricontattare: false, telSospetto: false, capSospetto: false, indirizzoIncerto: false };
+  state.geo.gen++;
+  state.geo.rerun = false;
+  state.geo.failed = false;
+  clearOsrmCache();
+  applyCsv(seedCsv());
+  syncPlans();
+  computeFlags();
+  render();
+  saveNow();
+  showToast('Dati di esempio ripristinati.', 'ok');
+  startGeocodingIfPossible();
+}
+
+function seedCsv() {
+  const node = document.getElementById('seed-csv');
+  return node ? String(node.textContent || '').trim() : '';
+}
+
+/* ==========================================================================
+   17. EVENTI
+   ========================================================================== */
+function setView(view) {
+  if (['oggi', 'domani', 'totale', 'impostazioni'].indexOf(view) < 0) return;
+  if (state.ui.view === view) {
+    state.ui.resetScroll = true;
+    render();
+    return;
+  }
+  state.ui.view = view;
+  state.ui.resetScroll = true;
+  state.ui.lastTouched = null;
+  render();
+}
+
+function toggleExpanded(code) {
+  if (state.ui.expanded.has(code)) state.ui.expanded.delete(code);
+  else state.ui.expanded.add(code);
+  renderTotaleResultsOnly();
+}
+
+function toggleOriginal(code) {
+  if (state.ui.showOriginal.has(code)) state.ui.showOriginal.delete(code);
+  else state.ui.showOriginal.add(code);
+  render();
+}
+
+function clearFilters() {
+  state.ui.filter = { stato: '', cap: '', citta: '', search: '', ricontattare: false, telSospetto: false, capSospetto: false, indirizzoIncerto: false };
+}
+
+document.addEventListener('click', event => {
+  const navButton = event.target.closest('[data-nav]');
+  if (navButton) {
+    event.preventDefault();
+    setView(navButton.dataset.nav);
+    return;
+  }
+
+  const el = event.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+  const code = el.dataset.code;
+
+  switch (action) {
+    case 'close-modal':
+      if (event.target === el || el.classList.contains('modal-close')) closeModal();
+      break;
+    case 'cancel-address':
+      closeModal();
+      break;
+    case 'edit-address':
+      event.preventDefault();
+      openAddressModal(code);
+      break;
+    case 'save-address':
+      saveAddress();
+      break;
+    case 'restore-address':
+      restoreAddress(code);
+      break;
+    case 'esito': {
+      haptic();
+      const stato = el.dataset.esito;
+      if (stato === 'cambio_zona' || stato === 'cambio_fuori') {
+        /* Il form si apre subito; l'esito viene registrato al salvataggio. */
+        openAddressModal(code, { motivo: 'trasferimento', transfer: stato });
+      } else {
+        applyEsito(code, stato, { tomorrow: state.ui.view === 'domani' });
+      }
+      break;
+    }
+    case 'salta':
+      haptic();
+      state.ui.sessionHandled.add(code);
+      markTouched(code);
+      render();
+      showToast('Candidato saltato.', 'ok');
+      break;
+    case 'remove-domani':
+      removeFromDomani(code);
+      break;
+    case 'confirm-day':
+      confirmGiornata();
+      break;
+    case 'toggle-row':
+      toggleExpanded(code);
+      break;
+    case 'toggle-original':
+      toggleOriginal(code);
+      break;
+    case 'why-address': {
+      const person = getPerson(code);
+      showToast(person && person.indirizzoProblemi.length ? person.indirizzoProblemi.join(' · ') : 'Nessun problema rilevato.', 'warn');
+      break;
+    }
+    case 'set-filter':
+      state.ui.filter.stato = el.dataset.stato || '';
+      render();
+      break;
+    case 'clear-filters':
+      clearFilters();
+      render();
+      break;
+    case 'trigger-import': {
+      const input = document.getElementById('import-csv-input');
+      if (input) input.click();
+      break;
+    }
+    case 'trigger-load': {
+      const input = document.getElementById('load-state-input');
+      if (input) input.click();
+      break;
+    }
+    case 'export-csv':
+      exportCsv();
+      break;
+    case 'save-state':
+      saveSnapshot();
+      break;
+    case 'recalc-geo':
+      recalcGeocoding();
+      break;
+    case 'reset-data':
+      resetData();
+      break;
+    default:
+      break;
+  }
+});
+
+document.addEventListener('input', event => {
+  const target = event.target;
+  if (target.matches('[data-note]')) {
+    const person = getPerson(target.dataset.note);
+    if (person) {
+      person.noteOperatore = target.value;
+      persistPerson(person);
+      saveSoon();
+      const status = target.closest('.note-block') ? target.closest('.note-block').querySelector('.note-status') : null;
+      if (status) status.textContent = 'salvato';
+    }
+    return;
+  }
+  if (target.matches('[data-search]')) {
+    state.ui.filter.search = target.value;
+    renderTotaleResultsOnly();
+  }
+});
+
+document.addEventListener('change', event => {
+  const target = event.target;
+  if (target.id === 'import-csv-input') { handleImportFile(target); return; }
+  if (target.id === 'load-state-input') { handleLoadState(target); return; }
+  if (target.matches('[data-appt-date]')) {
+    setAppointmentDate(target.dataset.apptDate, target.value);
+    return;
+  }
+  if (target.matches('[data-filter]')) {
+    const key = target.dataset.filter;
+    if (key === 'raggruppa') {
+      state.settings.raggruppa = !!target.checked;
+      saveSoon();
+    } else if (target.type === 'checkbox') {
+      state.ui.filter[key] = !!target.checked;
+    } else {
+      state.ui.filter[key] = target.value;
+    }
+    render();
+  }
+});
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && state.ui.modal) closeModal();
+});
+
+window.addEventListener('online', () => {
+  state.geo.offline = false;
+  state.geo.failed = false;
+  updateGeoNote();
+  showToast('Connessione ripristinata.', 'ok');
+  startGeocodingIfPossible();
+  scheduleOsrm();
+});
+
+window.addEventListener('offline', () => {
+  state.geo.offline = true;
+  updateGeoNote();
+  showToast('Sei offline: uso CAP e città.', 'warn');
+});
+
+window.addEventListener('pagehide', saveNow);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') saveNow();
+});
+
+/* ==========================================================================
+   18. AVVIO
+   ========================================================================== */
+function boot() {
+  state.storageOK = storageTest();
+  if (state.storageOK) loadLocalState();
+
+  let usedSeed = false;
+  if (!state.rawCsv) {
+    state.rawCsv = seedCsv();
+    usedSeed = true;
+  }
+
+  try {
+    applyCsv(state.rawCsv);
+  } catch (err) {
+    console.error('CSV non valido:', err);
+    state.esiti = {};
+    state.oggi = [];
+    state.domani = [];
+    state.geocache = {};
+    state.osrmcache = {};
+    applyCsv(seedCsv());
+    usedSeed = true;
+    showToast('Dati salvati non validi: caricato il CSV di esempio.', 'warn');
+  }
+
+  syncPlans();
+  computeFlags();
+  updatePersistBanner();
+  render();
+  saveSoon();
+  if (usedSeed) console.info('Ritiri: caricato il CSV di esempio incluso nel file.');
+  startGeocodingIfPossible();
+}
+
+boot();
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function () { /* file:// o browser senza supporto */ });
+  });
+}
+</script>
+</body>
+</html>
