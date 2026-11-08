@@ -1,5 +1,5 @@
 /* Service worker della demo Ritiri: cache dell'app shell per l'uso offline. */
-const CACHE_NAME = 'ritiri-demo-v1';
+const CACHE_NAME = 'ritiri-demo-v2';
 const APP_SHELL = [
   './',
   './index.html',
