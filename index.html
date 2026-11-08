@@ -373,9 +373,9 @@ main{max-width:720px;margin:0 auto;padding:14px 14px 28px}
 .status-pill{
   display:inline-flex;align-items:center;
   font-size:16px;font-weight:750;line-height:1.15;
-  padding:4px 9px;border-radius:999px;white-space:normal;overflow-wrap:anywhere;
+  padding:4px 8px;border-radius:999px;white-space:normal;overflow-wrap:normal;word-break:normal;
   border:1px solid #ded8ca;background:#f3efe6;color:#4d5a54;
-  flex:none;max-width:48%;text-align:center;line-height:1.15;
+  flex:none;max-width:52%;text-align:center;line-height:1.15;
 }
 .tone-green{background:var(--green-soft);color:#145c3a;border-color:#c3e2d1}
 .tone-yellow{background:var(--yellow-soft);color:#77490a;border-color:#ecd6a7}
@@ -2400,6 +2400,17 @@ function statusTone(person) {
   return (STATES[person.stato] || STATES.da_contattare).tone;
 }
 
+const STATUS_SHORT = {
+  appuntamento: 'Appuntamento',
+  gia_riconsegnato: 'Riconsegnato',
+  cambio_zona: 'In zona',
+  cambio_fuori: 'Fuori zona'
+};
+
+function statusPillLabel(person) {
+  return STATUS_SHORT[person.stato] || statusLabel(person);
+}
+
 function badgesHtml(person) {
   const badges = [];
   if (person.telMancante) {
@@ -2513,7 +2524,7 @@ function personCard(person, options) {
     + (Number.isInteger(index) ? '<div class="card-index" aria-hidden="true">' + (index + 1) + '</div>' : '')
     + '<div class="card-title-wrap"><h3 class="card-title">' + esc(person.nome) + '</h3>'
     + '<div class="card-meta">Cod. paziente ' + esc(person.code) + '</div></div>'
-    + '<span class="status-pill tone-' + statusTone(person) + '">' + esc(statusLabel(person)) + '</span></div>'
+    + '<span class="status-pill tone-' + statusTone(person) + '">' + esc(statusPillLabel(person)) + '</span></div>'
     + badgesHtml(person)
     + (state.ui.showOriginal.has(person.code) && person.modificato ? originalInfoHtml(person) : '')
     + '<div class="address-block">' + ICON.pin + '<div><strong>' + esc(person.indirizzo || 'Indirizzo mancante') + '</strong>'
@@ -2719,7 +2730,7 @@ function totalsRowHtml(person) {
     + '<div class="trow-main"><button type="button" class="trow-toggle" data-action="toggle-row" data-code="' + esc(person.code) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">'
     + '<span class="trow-name">' + esc(person.nome) + modifiedMark + '</span>'
     + '<span class="trow-meta">' + esc(person.citta || '—') + (person.cap ? ' · ' + esc(person.cap) : '') + ' · ' + (person.telefono ? esc(formatPhone(person.telefono)) : 'senza telefono') + '</span>'
-    + '</button><span class="status-pill tone-' + statusTone(person) + '">' + esc(statusLabel(person)) + '</span></div>'
+    + '</button><span class="status-pill tone-' + statusTone(person) + '">' + esc(statusPillLabel(person)) + '</span></div>'
     + '<div class="trow-actions">' + callButton + mapButton
     + '<button type="button" class="btn btn-sm btn-outline' + (person.indirizzoIncerto ? ' needs-fix' : '') + '" data-action="edit-address" data-code="' + esc(person.code) + '">' + ICON.pencil + ' Modifica indirizzo</button></div>'
     + (expanded ? '<div class="trow-details">'
