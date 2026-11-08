@@ -1,0 +1,5 @@
+# Non pubblicare mai dati reali o backup
+*.csv
+ritiri_export_*.csv
+ritiri_stato_*.json
+stato_ritiri_*.json
